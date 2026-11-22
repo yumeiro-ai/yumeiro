@@ -106,7 +106,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val mcp = mutableStateListOf<McpItem>()
     private var mcpRaw = JSONArray()
     var themeMode by mutableStateOf(session.themeMode)
-    var wallpaper by mutableStateOf("")
     private var systemDark = (app.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
     val isAdmin get() = me.optString("role") == "admin"
 
@@ -164,12 +163,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         stop()
-        viewModelScope.launch { withContext(Dispatchers.IO) { api.logout() }; convs.clear(); messages.clear(); pending.clear(); currentId = null; title = "新对话"; me = JSONObject(); org.yumeiro.app.ui.Pal.wallpaper = null; org.yumeiro.app.ui.Pal.gradient = null; screen = Screen.Login }
+        viewModelScope.launch { withContext(Dispatchers.IO) { api.logout() }; convs.clear(); messages.clear(); pending.clear(); currentId = null; title = "新对话"; me = JSONObject(); screen = Screen.Login }
     }
 
     private fun enterApp() {
         screen = Screen.Chat
-        loadConvs(); loadModels(); loadConfig(); loadUsage(); loadAgents(); loadMemories(); loadWallpaperPrefs(); loadWorkspaces(); phone.init()
+        loadConvs(); loadModels(); loadConfig(); loadUsage(); loadAgents(); loadMemories(); refreshWallpaper(); loadWorkspaces(); phone.init()
         if (isAdmin) loadServiceUpdate()
     }
 
@@ -224,43 +223,117 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun applyTheme() { org.yumeiro.app.ui.Pal.dark = when (themeMode) { "dark" -> true; "light" -> false; else -> systemDark } }
     fun setSystemDark(value: Boolean) { systemDark = value; applyTheme() }
     fun setTheme(mode: String) { themeMode = mode; session.themeMode = mode; session.save(); applyTheme() }
-    // 壁纸和网页版、Windows 版共用服务器上的设置（/api/wallpapers）：选了什么、遮罩多暗，换设备也一样
+    // ---- 壁纸：只保存在这台手机上（不跟服务器、不跟账号走，换服务器或换账号也不变）----
+    // 取值：""=无壁纸（默认）、"preset:<id>"=内置渐变、"local"=从手机选的图片（已缩小并复制到应用私有目录）、"server:<文件名>"=只记住名字的服务器壁纸库图片。
+    // 不读取也不写入服务器上的壁纸偏好（pref / defaultWallpaper）。
     class WallItem(val name: String, val kind: String)
     val wallItems = mutableStateListOf<WallItem>()
-    var wallDim by mutableStateOf(35)
-    private var wallDefault = ""
-    fun loadWallpaperPrefs() = io({ api.call("GET", "/api/wallpapers") }, onError = {}) { d ->
-        wallItems.clear(); wallItems.addAll((d.optJSONArray("items") ?: JSONArray()).objects().map { WallItem(it.optString("name"), it.optString("kind")) })
-        val pref = d.optJSONObject("pref"); wallDefault = d.optString("defaultWallpaper")
-        wallpaper = if (pref == null || pref.isNull("wallpaper")) wallDefault else pref.optString("wallpaper")
-        wallDim = pref?.optInt("dim", 35) ?: 35
-        showWallpaper()
+    private val devicePrefs = getApplication<Application>().getSharedPreferences("yumeiro_device", android.content.Context.MODE_PRIVATE)
+    var wallpaper by mutableStateOf(devicePrefs.getString("wall", "") ?: "")
+    var wallDim by mutableStateOf(devicePrefs.getInt("wallDim", 35).coerceIn(0, 80))
+    var wallBusy by mutableStateOf(false); private set
+    private var wallSeq = 0
+    val hasLocalWallpaper get() = localWallFile() != null
+
+    private fun localWallFile(): java.io.File? {
+        val name = devicePrefs.getString("wallLocalFile", "") ?: ""
+        if (!Regex("wallpaper-\\d+\\.jpg").matches(name)) return null
+        return java.io.File(getApplication<Application>().filesDir, name).takeIf { it.isFile }
     }
-    fun chooseWallpaper(name: String) {
-        wallpaper = name; showWallpaper()
-        io({ api.call("PUT", "/api/wallpapers/pref", JSONObject().put("wallpaper", name).put("dim", wallDim)) }, onError = { say(it.message ?: "保存壁纸失败") })
+    private fun saveWall(value: String) { wallpaper = value; devicePrefs.edit().putString("wall", value).apply() }
+
+    /** 只用来在选择器里列出服务器壁纸库；绝不读 pref / defaultWallpaper。 */
+    fun loadWallItems() = io({ api.call("GET", "/api/wallpapers") }, onError = {}) { d ->
+        wallItems.clear(); wallItems.addAll((d.optJSONArray("items") ?: JSONArray()).objects().map { WallItem(it.optString("name"), it.optString("kind")) }.filter { it.kind == "image" && it.name.isNotBlank() })
+    }
+    fun chooseWallpaper(id: String) {
+        val value = when {
+            id.isEmpty() || id.startsWith("preset:") || id.startsWith("server:") -> id
+            id == "local" && hasLocalWallpaper -> "local"
+            else -> ""
+        }
+        saveWall(value); org.yumeiro.app.ui.Pal.wallpaper = null; showWallpaper()
     }
     fun chooseWallDim(dim: Int) {
-        wallDim = dim; org.yumeiro.app.ui.Pal.dim = dim
-        io({ api.call("PUT", "/api/wallpapers/pref", JSONObject().put("wallpaper", wallpaper).put("dim", dim)) }, onError = { say(it.message ?: "保存失败") })
+        wallDim = dim.coerceIn(0, 80); org.yumeiro.app.ui.Pal.dim = wallDim; devicePrefs.edit().putInt("wallDim", wallDim).apply()
     }
+    /** 启动时和进入应用后按本机记住的选择显示壁纸；server: 的需要登录后才能取图。 */
+    fun refreshWallpaper() = showWallpaper()
+
+    private fun decodeSampled(data: ByteArray, maxSide: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1; while (bounds.outWidth / sample > maxSide * 2 || bounds.outHeight / sample > maxSide * 2) sample *= 2
+        return BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
     private fun showWallpaper() {
         val pal = org.yumeiro.app.ui.Pal; pal.dim = wallDim
-        val preset = org.yumeiro.app.ui.WALL_PRESETS.firstOrNull { "preset:" + it.id == wallpaper }
+        val seq = ++wallSeq; val w = wallpaper
+        val preset = org.yumeiro.app.ui.WALL_PRESETS.firstOrNull { "preset:" + it.id == w }
         pal.gradient = preset?.colors
-        val name = if (wallpaper == "preset:slideshow") wallItems.firstOrNull { it.kind == "image" }?.name ?: "" else wallpaper
-        val file = wallItems.firstOrNull { it.name == name && it.kind == "image" }
-        if (preset != null || file == null) { pal.wallpaper = null; return }
+        if (preset != null || w.isEmpty()) { pal.wallpaper = null; return }
         viewModelScope.launch {
-            val bmp = withContext(Dispatchers.IO) { runCatching {
-                val data = api.bytes("/api/wallpapers/file/" + java.net.URLEncoder.encode(file.name, "UTF-8"), 12 * 1024 * 1024).second
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-                var sample = 1; while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) sample *= 2
-                BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply { inSampleSize = sample })
-            }.getOrNull() }
-            if (name == (if (wallpaper == "preset:slideshow") file.name else wallpaper)) pal.wallpaper = bmp?.asImageBitmap()
+            var missing = false
+            val bmp = withContext(Dispatchers.IO) {
+                try {
+                    if (w == "local") localWallFile()?.readBytes()?.let { decodeSampled(it, 1600) }
+                    else if (w.startsWith("server:")) {
+                        if (session.cookies.isEmpty()) null
+                        else decodeSampled(api.bytes("/api/wallpapers/file/" + java.net.URLEncoder.encode(w.removePrefix("server:"), "UTF-8"), 12 * 1024 * 1024).second, 1600)
+                    } else null
+                } catch (e: ApiException) { if (e.status == 404) missing = true; null } catch (e: Exception) { null }
+            }
+            if (seq != wallSeq) return@launch
+            // 记住的服务器壁纸已经被删掉：悄悄回到“无壁纸”；本机图片损坏同理
+            if (missing || (w == "local" && bmp == null)) { saveWall(""); pal.wallpaper = null; return@launch }
+            pal.wallpaper = bmp?.asImageBitmap()
         }
     }
+
+    /** 从手机选的图片：校验确实是图片、限制大小和分辨率、缩小后以 JPEG 存进应用私有目录（不需要存储权限）。 */
+    fun importWallpaper(uri: Uri) {
+        if (wallBusy) return
+        wallBusy = true
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { storeLocalWallpaper(uri) } }
+            wallBusy = false
+            result.onSuccess { name ->
+                val old = localWallFile()
+                devicePrefs.edit().putString("wallLocalFile", name).apply()
+                if (old != null && old.name != name) old.delete()
+                saveWall("local"); org.yumeiro.app.ui.Pal.wallpaper = null; showWallpaper(); say("已设为壁纸（只在这台手机上生效）")
+            }.onFailure { say((it as? WallError)?.message ?: "无法使用这张图片") }
+        }
+    }
+
+    private class WallError(message: String) : Exception(message)
+
+    private fun storeLocalWallpaper(uri: Uri): String {
+        val ctx = getApplication<Application>()
+        val limit = 20 * 1024 * 1024
+        val data = ctx.contentResolver.openInputStream(uri)?.use { s ->
+            val out = java.io.ByteArrayOutputStream(); val buf = ByteArray(16384)
+            while (true) { val n = s.read(buf); if (n < 0) break; out.write(buf, 0, n); if (out.size() > limit) throw WallError("图片太大（最多 20 MB）") }
+            out.toByteArray()
+        } ?: throw WallError("无法读取这张图片")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outMimeType?.startsWith("image/") != true) throw WallError("这不是可以使用的图片")
+        if (bounds.outWidth.toLong() * bounds.outHeight > 100_000_000L) throw WallError("图片分辨率太大")
+        var bmp = decodeSampled(data, 1920) ?: throw WallError("这不是可以使用的图片")
+        val rotate = when (runCatching { android.media.ExifInterface(java.io.ByteArrayInputStream(data)).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)) { 3 -> 180f; 6 -> 90f; 8 -> 270f; else -> 0f }
+        val scale = minOf(1f, 1920f / maxOf(bmp.width, bmp.height))
+        if (rotate != 0f || scale < 1f) {
+            val m = android.graphics.Matrix().apply { if (rotate != 0f) postRotate(rotate); if (scale < 1f) postScale(scale, scale) }
+            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+        }
+        val name = "wallpaper-" + System.currentTimeMillis() + ".jpg"
+        val file = java.io.File(ctx.filesDir, name)
+        try { file.outputStream().use { if (!bmp.compress(Bitmap.CompressFormat.JPEG, 85, it)) throw WallError("图片保存失败") } }
+        catch (e: Exception) { file.delete(); throw if (e is WallError) e else WallError("图片保存失败") }
+        return name
+    }
+    init { showWallpaper() }
 
     // ---- 智能体 ----
     fun saveAgent(id: String?, name: String, description: String, prompt: String, model: String, skillIds: List<String>, shared: Boolean, done: (String?) -> Unit) {
@@ -352,7 +425,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- 管理（仅管理员）----
     private fun parseMember(it: JSONObject) = Member(it.optString("id"), it.optString("email"), it.optString("displayName").ifBlank { it.optString("email") }, it.optBoolean("disabled"), it.optInt("todayCalls"), it.optJSONObject("month")?.optInt("calls") ?: it.optInt("calls"), it.optJSONObject("month")?.optLong("totalTokens") ?: it.optLong("totalTokens"))
     fun loadMembers() = io({ api.call("GET", "/api/admin/members") }) { d -> members.clear(); members.addAll((d.optJSONArray("members") ?: JSONArray()).objects().map { parseMember(it) }) }
-    fun createMember(email: String, name: String, password: String, done: (String?) -> Unit) =
+    fun createMember(email: String, name: String, password: String, done: (String?) -> Unit) { if (password.length < 12) { done("初始密码至少需要 12 位"); return }; createMemberCall(email, name, password, done) }
+    private fun createMemberCall(email: String, name: String, password: String, done: (String?) -> Unit) =
         io({ api.call("POST", "/api/admin/members", JSONObject().put("email", email).put("displayName", name).put("password", password)) }, onError = { done(it.message ?: "创建失败") }) { loadMembers(); done(null) }
     fun setMemberDisabled(id: String, disabled: Boolean) = io({ api.call("PATCH", "/api/admin/members/$id", JSONObject().put("disabled", disabled)) }) { loadMembers() }
     fun resetMemberPassword(id: String, password: String, done: (String?) -> Unit) =
@@ -368,6 +442,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val copy = JSONArray(mcpRaw.toString()); for (i in 0 until copy.length()) copy.getJSONObject(i).let { if (it.optString("name") == name) it.put("enabled", enabled) }
         io({ api.call("PUT", "/api/admin/mcp", JSONObject().put("servers", copy)) }) { loadMcp(); say(if (enabled) "已启用 $name" else "已停用 $name") }
     }
+    // ---- 管理：安全与熔断 / 套餐 / 模型价格 / 站点（服务端同样只允许管理员）----
+    var adminSecurity by mutableStateOf<JSONObject?>(null); private set
+    var adminPlan by mutableStateOf<JSONObject?>(null); private set
+    var adminPricing by mutableStateOf<JSONObject?>(null); private set
+    var adminSite by mutableStateOf<JSONObject?>(null); private set
+    var adminError by mutableStateOf("")
+    private fun adminFail(e: ApiException) { adminError = e.message ?: "读取失败" }
+    fun loadAdminSecurity() = io({ api.call("GET", "/api/admin/security") }, onError = { adminFail(it) }) { adminSecurity = it; adminError = "" }
+    fun saveAdminSecurity(body: JSONObject, done: (String?) -> Unit) =
+        io({ api.call("PUT", "/api/admin/security", body) }, onError = { done(it.message ?: "保存失败") }) { loadAdminSecurity(); say("安全设置已保存，立即对所有成员生效"); done(null) }
+    fun breakerAction(payload: JSONObject) =
+        io({ api.call("POST", "/api/admin/security/breaker", payload) }) { loadAdminSecurity(); say("已执行") }
+    fun loadAdminPlan() = io({ api.call("GET", "/api/admin/plan") }, onError = { adminFail(it) }) { adminPlan = it; adminError = "" }
+    fun loadAdminPricing() = io({ api.call("GET", "/api/admin/pricing") }, onError = { adminFail(it) }) { adminPricing = it; adminError = "" }
+    fun saveAdminPricing(body: JSONObject, done: (String?) -> Unit) =
+        io({ api.call("PUT", "/api/admin/pricing", body) }, onError = { done(it.message ?: "保存失败") }) { loadAdminPricing(); say("价格已保存（${it.optInt("count")} 个模型），之后的调用按新价格计费"); done(null) }
+    fun syncAdminPricing(done: (JSONObject?, String?) -> Unit) =
+        io({ api.call("POST", "/api/admin/pricing/sync", JSONObject()) }, onError = { done(null, it.message ?: "读取失败") }) { done(it, null) }
+    fun loadAdminSite() = io({ api.call("GET", "/api/site") }, onError = { adminFail(it) }) { adminSite = it; adminError = "" }
+    fun saveAdminSite(name: String, notice: String, mode: String, done: (String?) -> Unit) =
+        io({ api.call("PUT", "/api/admin/site", JSONObject().put("name", name).put("notice", notice).put("mode", mode)) }, onError = { done(it.message ?: "保存失败") }) { loadAdminSite(); say("站点设置已保存；使用模式的变化需要刷新其他端页面后生效"); done(null) }
     fun setFont(scale: Float) { fontScale = scale; session.fontScale = scale; session.save() }
 
     fun chooseModel(ref: String) { selectedModel = ref; session.defaultModel = ref; session.save() }

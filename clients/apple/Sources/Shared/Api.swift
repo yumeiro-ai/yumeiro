@@ -20,6 +20,11 @@ final class Session: @unchecked Sendable {
     var themeMode: String { get { defaults.string(forKey: "themeMode") ?? "dark" } set { defaults.set(newValue, forKey: "themeMode") } }
     var fontScale: Double { get { let v = defaults.double(forKey: "fontScale"); return v == 0 ? 1.0 : v } set { defaults.set(newValue, forKey: "fontScale") } }
 
+    /// 壁纸只属于这台设备：不跟服务器、账号走，切换服务器或账号后仍然保留。
+    /// "" = 无；"local" = 本机图片（文件在 Application Support）；"preset:xxx" = 内置渐变；"server:文件名" = 服务器壁纸库里的某张（只记名字）
+    var wallpaperChoice: String { get { defaults.string(forKey: "deviceWallpaper") ?? "" } set { defaults.set(newValue, forKey: "deviceWallpaper") } }
+    var wallpaperDim: Int { get { (defaults.object(forKey: "deviceWallpaperDim") as? Int) ?? 35 } set { defaults.set(newValue, forKey: "deviceWallpaperDim") } }
+
     private var _cookies: [String: String] = [:]
     private var _csrf = ""
     init() {
@@ -102,7 +107,7 @@ final class ApiClient: NSObject, URLSessionDelegate, @unchecked Sendable {
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(session.server, forHTTPHeaderField: "Origin")
-        req.setValue("Yumeiro-Apple/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Yumeiro-Apple/0.46", forHTTPHeaderField: "User-Agent")
         let cookies = session.cookies
         if !cookies.isEmpty { req.setValue(cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; "), forHTTPHeaderField: "Cookie") }
         if method != "GET", !session.csrf.isEmpty { req.setValue(session.csrf, forHTTPHeaderField: "X-CSRF-Token") }

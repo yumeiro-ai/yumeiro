@@ -11,8 +11,8 @@ android {
         applicationId = "org.yumeiro.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.4.1"
+        versionCode = 10
+        versionName = "0.46.1"
     }
 
     buildTypes {

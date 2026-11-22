@@ -567,8 +567,11 @@
       if (activeWorkspaceId && workspaceById(activeWorkspaceId)) { renderWorkspaceIde(); renderWorkspaceAccess(workspaceById(activeWorkspaceId)); try { await loadWorkspaceTree(activeWorkspaceId); } catch (x) { toast(x.message); } return; }
       clearPage('工作区', '像 IDE 一样管理项目文件，并在同一个工作区中选择编译器与模型'); const bar = document.createElement('div'); bar.className = 'page-actions'; const input = document.createElement('input'); input.placeholder = '新工作区名称'; const add = document.createElement('button'); add.className = 'primary-btn'; add.textContent = '创建工作区'; add.onclick = async () => { try { const d = await api('POST', '/api/workspaces', { name: input.value.trim() || '未命名工作区' }); workspaces.unshift(d.workspace); input.value = ''; renderNative('workspaces'); } catch (x) { toast(x.message); } }; bar.append(input, add); page.append(bar); const box = document.createElement('div'); box.className = 'page-grid'; for (const w of workspaces) { const b = document.createElement('div'); b.className = 'market-card'; const h = document.createElement('h3'); h.textContent = w.name; const p = document.createElement('p'); p.textContent = (w.mine ? '我的工作区' : '成员工作区') + ' · ' + (w.members || []).length + ' 位成员'; const open = document.createElement('button'); open.className = 'ghost-btn'; open.textContent = '打开 IDE'; open.onclick = () => openWorkspace(w.id); b.append(h, p, open); box.append(b); } if (!workspaces.length) box.append(card('还没有工作区', '创建一个工作区后即可使用 Claude Code、Codex 或 Pi')); page.append(box);
     } else if (which === 'admin') {
-      clearPage('管理', '服务器、成员、模型服务商和智能体引擎'); const box = document.createElement('div'); box.className = 'page-grid';
-      for (const e of engines) { const b = document.createElement('div'); b.className = 'market-card'; const h = document.createElement('h3'); h.textContent = e.label || e.engine; const p = document.createElement('p'); p.textContent = (e.ok === false ? '不可用' : '已启用') + ' · ' + ((e.models || []).join(', ') || '未配置模型'); b.append(h, p); } box.append(card('模型服务商', '可在服务器管理中配置普通模型服务商和默认模型')); page.append(box);
+      clearPage('管理', '服务器上的设置：成员、安全与熔断、套餐、模型价格、站点和智能体引擎（改动对所有人生效）');
+      if (me?.role !== 'admin') { page.append(h('p', 'muted', '只有管理员可以使用这里。')); return; }
+      const host = h('div', ''); host.style.cssText = 'max-width:1000px;margin:0 auto'; page.append(host);
+      const engineBox = () => { const box = h('div', 'page-grid'); for (const e of engines) box.append(h('div', 'market-card', h('h3', '', e.label || e.engine), h('p', '', (e.ok === false ? '不可用' : '已启用') + ' · ' + ((e.models || []).join(', ') || '未配置模型')))); if (!engines.length) box.append(h('p', 'muted', '没有可用的智能体引擎。')); return box; };
+      window.renderAdminPanels({ h, api, toast, setRow, selectOf, host, engineBox });
     }
   }
   async function renderNative(which) {
@@ -656,28 +659,28 @@
       const cur = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
       col.append(h('div', 'set-card', setRow('配色', '深色最适合配合壁纸使用', selectOf([['dark', '深色'], ['light', '浅色']], cur, v => { document.documentElement.dataset.theme = v; try { localStorage.setItem('yumeiro.theme', v); } catch { /* 存储不可用 */ } }))));
       col.append(h('div', 'set-h', '壁纸'));
-      const card = h('div', 'set-card'), grid = h('div', 'wall-grid'), dimRow = h('div', ''); card.append(grid, dimRow); col.append(card);
+      const card = h('div', 'set-card'), grid = h('div', 'wall-grid'), dimRow = h('div', ''); card.append(setRow('只在这台电脑上生效', '壁纸保存在本机，不会随服务器或账号改变，也不会被服务器的默认壁纸替换', h('span', '')), grid, dimRow); col.append(card);
       (async () => {
-        try {
-          const d = await api('GET', '/api/wallpapers'), pref = d.pref || {}, current = pref.wallpaper === null || pref.wallpaper === undefined ? d.defaultWallpaper : pref.wallpaper;
-          let choice = current || '', dim = Number.isFinite(pref.dim) ? pref.dim : 35;
-          const mark = () => grid.querySelectorAll('.wall-tile').forEach(t => t.classList.toggle('on', t.dataset.name === choice));
-          const save = () => api('PUT', '/api/wallpapers/pref', { wallpaper: choice, dim: Math.round(dim) });
-          const choose = async name => { choice = name; await save(); mark(); await applyWall(d, choice, dim); };
-          const mk = (name, label, style) => { const t = h('button', 'wall-tile' + (name === '' ? ' none' : '') + (name === choice ? ' on' : ''), h('span', '', label)); if (name === '') t.textContent = label; t.type = 'button'; t.dataset.name = name; if (style) t.style.backgroundImage = style; t.onclick = () => choose(name).catch(x => toast(x.message)); grid.append(t); return t; };
-          mk('', '无壁纸');
-          for (const pr of WALL_PRESETS) mk('preset:' + pr[0], pr[1], pr[2]);
-          const images = (d.items || []).filter(i => i.kind === 'image').slice(0, 24);
-          for (const item of images) {
-            const tile = mk(item.name, item.name.replace(/\.[^.]+$/, ''));
-            app.file('/api/wallpapers/file/' + encodeURIComponent(item.name)).then(url => { if (url) tile.style.backgroundImage = 'url("' + url + '")'; });
-          }
-          const range = h('input'); range.type = 'range'; range.min = '0'; range.max = '80'; range.step = '5'; range.value = String(dim);
-          range.oninput = () => { dim = Number(range.value); setDim(dim); };
-          range.onchange = () => { dim = Number(range.value); save().catch(x => toast(x.message)); };
-          dimRow.append(setRow('壁纸遮罩', '数值越大壁纸越暗，文字更清楚', range));
-          if (!images.length) grid.append(h('div', 'empty-state', '服务器上还没有壁纸，管理员可以在服务器里上传'));
-        } catch (x) { grid.append(h('div', 'empty-state', '读取壁纸失败：' + x.message)); }
+        let d = { items: [] }; try { d = await api('GET', '/api/wallpapers'); } catch { /* 读不到服务器壁纸库也不影响本机壁纸 */ }
+        let choice = wallChoice(), dim = wallDimValue();
+        const mark = () => grid.querySelectorAll('.wall-tile').forEach(t => t.classList.toggle('on', t.dataset.name === choice));
+        const choose = async name => { choice = name; wallSet(name); mark(); await applyWall(d, choice, dim); };
+        const mk = (name, label, style) => { const t = h('button', 'wall-tile' + (name === '' ? ' none' : '') + (name === choice ? ' on' : ''), h('span', '', label)); if (name === '') t.textContent = label; t.type = 'button'; t.dataset.name = name; if (style) t.style.backgroundImage = style; t.onclick = () => choose(name).catch(x => toast(x.message)); grid.append(t); return t; };
+        mk('', '无壁纸');
+        const pick = h('button', 'wall-tile', h('span', '', '＋ 从本机选图片')); pick.type = 'button';
+        pick.onclick = async () => { const r = await app.wallPick(); if (r && r.ok) { await choose('local'); mk('local', '我的图片').style.backgroundImage = 'url("' + await app.wallGet() + '")'; toast('已设为壁纸（只在这台电脑上生效）'); } else if (r && r.error) toast(r.error); };
+        grid.append(pick);
+        if (choice === 'local') app.wallGet().then(url => { if (url) mk('local', '我的图片').style.backgroundImage = 'url("' + url + '")'; });
+        for (const pr of WALL_PRESETS) mk('preset:' + pr[0], pr[1], pr[2]);
+        const images = (d.items || []).filter(i => i.kind === 'image').slice(0, 24);
+        for (const item of images) {
+          const tile = mk('server:' + item.name, item.name.replace(/\.[^.]+$/, ''));
+          app.file('/api/wallpapers/file/' + encodeURIComponent(item.name)).then(url => { if (url) tile.style.backgroundImage = 'url("' + url + '")'; });
+        }
+        const range = h('input'); range.type = 'range'; range.min = '0'; range.max = '80'; range.step = '5'; range.value = String(dim);
+        range.oninput = () => { dim = Number(range.value); setDim(dim); };
+        range.onchange = () => { dim = Number(range.value); wallDimSet(dim); };
+        dimRow.append(setRow('壁纸遮罩', '数值越大壁纸越暗，文字更清楚', range));
       })();
     } else if (section === 'pet') {
       const set = patch => app.petSet(patch);
@@ -797,22 +800,28 @@
   const WALL_PRESETS = [['aurora', '极光', 'linear-gradient(135deg,#1d2b64,#f8cdda)'], ['dusk', '黄昏', 'linear-gradient(135deg,#355c7d,#6c5b7b,#c06c84)'], ['mint', '薄荷', 'linear-gradient(135deg,#a8edea,#fed6e3)'], ['ocean', '海湾', 'linear-gradient(135deg,#2193b0,#6dd5ed)'], ['sunrise', '日出', 'linear-gradient(135deg,#ff9a9e,#fecfef,#fecfef)'], ['forest', '森林', 'linear-gradient(135deg,#134e5e,#71b280)'], ['night', '夜空', 'linear-gradient(135deg,#0f2027,#203a43,#2c5364)'], ['sand', '沙丘', 'linear-gradient(135deg,#f6d365,#fda085)']];
   // 服务器的“暗度”是 0–80 的整数百分比；这里换算成深色遮罩的不透明度
   const setDim = dim => document.documentElement.style.setProperty('--dim', 'rgba(8,10,16,' + (0.15 + Math.max(0, Math.min(80, Number(dim) || 0)) / 100 * 0.75).toFixed(2) + ')');
+  // 壁纸的选择只存在这台电脑上（localStorage + 用户数据目录里的一张图），不读也不写服务器上的壁纸偏好和默认壁纸
+  const wallChoice = () => { try { return localStorage.getItem('yumeiro.wall') || ''; } catch { return ''; } };
+  const wallSet = v => { try { localStorage.setItem('yumeiro.wall', v); } catch { /* 存储不可用 */ } };
+  const wallDimValue = () => { try { const raw = localStorage.getItem('yumeiro.wallDim'), n = Number(raw); return raw !== null && Number.isFinite(n) ? Math.max(0, Math.min(80, n)) : 35; } catch { return 35; } };
+  const wallDimSet = v => { try { localStorage.setItem('yumeiro.wallDim', String(Math.round(v))); } catch { /* 存储不可用 */ } };
   async function applyWall(d, choice, dim) {
     const wall = $('wall'); setDim(dim);
     const preset = WALL_PRESETS.find(pr => 'preset:' + pr[0] === choice);
     if (preset) { wall.style.backgroundImage = preset[2]; return; }
-    let name = choice; if (choice === 'preset:slideshow') { const first = (d.items || []).find(i => i.kind === 'image'); name = first && first.name; }
-    const file = (d.items || []).find(i => i.name === name);
-    if (!file || file.kind !== 'image') { wall.style.backgroundImage = ''; return; }
-    const url = await app.file('/api/wallpapers/file/' + encodeURIComponent(file.name));
-    wall.style.backgroundImage = url ? 'url("' + url + '")' : '';
+    if (choice === 'local') { const url = await app.wallGet(); wall.style.backgroundImage = url ? 'url("' + url + '")' : ''; if (!url) wallSet(''); return; }
+    if (choice.startsWith('server:')) {
+      const name = choice.slice(7), file = ((d && d.items) || []).find(i => i.name === name);
+      if (!file || file.kind !== 'image') { wall.style.backgroundImage = ''; if (d && d.items && d.items.length) wallSet(''); return; }   // 服务器上已经没有这张图：悄悄回到“无壁纸”
+      const url = await app.file('/api/wallpapers/file/' + encodeURIComponent(file.name));
+      wall.style.backgroundImage = url ? 'url("' + url + '")' : ''; return;
+    }
+    wall.style.backgroundImage = '';
   }
   async function loadWallpaper() {
-    try {
-      const d = await api('GET', '/api/wallpapers'), pref = d.pref || {};
-      const choice = pref.wallpaper === null || pref.wallpaper === undefined ? d.defaultWallpaper : pref.wallpaper;
-      await applyWall(d, choice || '', Number.isFinite(pref.dim) ? pref.dim : 35);
-    } catch { /* 没有壁纸就保持深色底 */ }
+    const choice = wallChoice(); let d = null;
+    if (choice.startsWith('server:')) { try { d = await api('GET', '/api/wallpapers'); } catch { /* 连不上就先不显示 */ } }
+    try { await applyWall(d, choice, wallDimValue()); } catch { /* 没有壁纸就保持深色底 */ }
   }
 
   // ── 启动 ──

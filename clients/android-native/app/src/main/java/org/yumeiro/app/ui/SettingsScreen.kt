@@ -81,6 +81,7 @@ fun SettingsScreen(vm: AppViewModel) {
     BackHandler { vm.closeSettings() }
     LaunchedEffect(Unit) { vm.loadWorkspaces(); if (vm.isAdmin) { vm.loadMembers(); vm.loadServiceUpdate() } }
     var addMemory by remember { mutableStateOf(false) }; var clearAsk by remember { mutableStateOf(false) }; var pwd by remember { mutableStateOf(false) }; var picker by remember { mutableStateOf("") }
+    val pickImage = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetContent()) { uri -> if (uri != null) vm.importWallpaper(uri) }
     var workspaceEmail by remember { mutableStateOf("") }; var workspaceUserId by remember { mutableStateOf("") }; var workspaceSearch by remember { mutableStateOf("") }; var workspaceError by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -144,7 +145,7 @@ fun SettingsScreen(vm: AppViewModel) {
             }
             PhoneLinkCard(vm)
             Card("更多") {
-                for ((label, hint, target) in listOf(Triple("智能体", "新建、编辑、选择", Screen.Agents), Triple("技能", "自己写，或从市场安装", Screen.Skills), Triple("技能市场", "浏览并一键安装", Screen.Market)) + (if (vm.isAdmin) listOf(Triple("网页找回密码确认", "输入网页上的验证码，批准或拒绝", Screen.Security), Triple("管理", "成员、用量、MCP 开关", Screen.Admin)) else emptyList()))
+                for ((label, hint, target) in listOf(Triple("智能体", "新建、编辑、选择", Screen.Agents), Triple("技能", "自己写，或从市场安装", Screen.Skills), Triple("技能市场", "浏览并一键安装", Screen.Market)) + (if (vm.isAdmin) listOf(Triple("网页找回密码确认", "输入网页上的验证码，批准或拒绝", Screen.Security), Triple("管理", "成员、安全与熔断、套餐、模型价格、站点设置", Screen.Admin)) else emptyList()))
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { vm.open(target) }.padding(vertical = 10.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) { Text(label, color = Ink, fontSize = 15.sp); Text(hint, color = Muted, fontSize = 12.sp) }; Text("›", color = Muted, fontSize = 20.sp)
                     }
@@ -162,12 +163,12 @@ fun SettingsScreen(vm: AppViewModel) {
             }
             Card("外观", "只影响这台手机") {
                 PickRow("主题", mapOf("system" to "跟随系统", "dark" to "深色", "light" to "浅色")[vm.themeMode] ?: "深色") { picker = "theme" }
-                PickRow("壁纸", wallOptions(vm).firstOrNull { it.id == vm.wallpaper }?.label ?: "无") { picker = "wp" }
+                PickRow("壁纸", (wallOptions(vm).firstOrNull { it.id == vm.wallpaper }?.label ?: if (vm.wallpaper.startsWith("server:")) vm.wallpaper.removePrefix("server:").substringBeforeLast('.') else "无") + if (vm.wallBusy) "（处理中…）" else "") { vm.loadWallItems(); picker = "wp" }
                 PickRow("壁纸遮罩", dims.firstOrNull { it.id == vm.wallDim.toString() }?.label ?: (vm.wallDim.toString() + "%")) { picker = "dim" }
                 PickRow("字体大小", fonts.firstOrNull { it.id == vm.fontScale.toString() }?.label ?: "标准") { picker = "font" }
             }
             Card("关于") {
-                Text("Yumeiro 安卓原生客户端 1.3.2", color = Muted, fontSize = 13.sp)
+                Text("Yumeiro 安卓原生客户端 0.46.1", color = Muted, fontSize = 13.sp)
                 Text("Powered by Yumeiro", color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Text("使用 Cindy、Dash黄一孟 的项目进行制作 · 制作者：BYL", color = Muted, fontSize = 11.sp)
                 Text("以 Apache License 2.0 开源；使用、修改、分发请保留署名与许可证", color = Muted, fontSize = 11.sp)
@@ -180,7 +181,7 @@ fun SettingsScreen(vm: AppViewModel) {
         "model" -> PickerDialog("默认对话模型", vm.models.map { Opt(it.ref, it.label, it.provider) }, vm.selectedModel, { vm.chooseModel(it) }, { picker = "" })
         "agent" -> PickerDialog("新对话使用的智能体", listOf(Opt("", "不使用智能体", "普通对话")) + vm.agents.map { Opt(it.id, it.name, it.description) }, vm.selectedAgent, { vm.chooseAgent(it) }, { picker = "" })
         "theme" -> PickerDialog("主题", listOf(Opt("system", "跟随系统"), Opt("dark", "深色"), Opt("light", "浅色")), vm.themeMode, { vm.setTheme(it) }, { picker = "" })
-        "wp" -> PickerDialog("壁纸", wallOptions(vm), vm.wallpaper, { vm.chooseWallpaper(it) }, { picker = "" })
+        "wp" -> PickerDialog("壁纸（只在这台手机上生效）", wallOptions(vm), vm.wallpaper, { if (it == "__pick") pickImage.launch("image/*") else vm.chooseWallpaper(it) }, { picker = "" })
         "dim" -> PickerDialog("壁纸遮罩（越大越暗）", dims, vm.wallDim.toString(), { vm.chooseWallDim(it.toInt()) }, { picker = "" })
         "font" -> PickerDialog("字体大小", fonts, vm.fontScale.toString(), { vm.setFont(it.toFloat()) }, { picker = "" })
     }
@@ -207,5 +208,7 @@ private val fonts = listOf(Opt("0.9", "小"), Opt("1.0", "标准"), Opt("1.15", 
 
 private val dims = listOf(Opt("0", "最亮 0%"), Opt("20", "20%"), Opt("35", "标准 35%"), Opt("50", "50%"), Opt("65", "65%"), Opt("80", "最暗 80%"))
 private fun wallOptions(vm: AppViewModel): List<Opt> =
-    listOf(Opt("", "无壁纸")) + WALL_PRESETS.map { Opt("preset:" + it.id, it.label, "渐变") } +
-    vm.wallItems.filter { it.kind == "image" }.map { Opt(it.name, it.name.substringBeforeLast('.'), "服务器壁纸") }
+    listOf(Opt("", "无壁纸"), Opt("__pick", "从手机相册选择图片…", "会缩小后保存在本应用里，不需要存储权限")) +
+    (if (vm.hasLocalWallpaper) listOf(Opt("local", "我选的图片", "本机")) else emptyList()) +
+    WALL_PRESETS.map { Opt("preset:" + it.id, it.label, "渐变") } +
+    vm.wallItems.filter { it.kind == "image" }.map { Opt("server:" + it.name, it.name.substringBeforeLast('.'), "服务器壁纸库（只记住名字，不改服务器设置）") }

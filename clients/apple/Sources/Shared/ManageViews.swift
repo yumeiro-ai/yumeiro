@@ -188,8 +188,9 @@ struct AdminView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) { Text("成员").tag(0); Text("用量").tag(1); Text("MCP").tag(2) }.pickerStyle(.segmented).padding()
+            Picker("", selection: $tab) { Text("成员").tag(0); Text("用量").tag(1); Text("MCP").tag(2); Text("安全与熔断").tag(3); Text("套餐与授权").tag(4); Text("模型价格").tag(5); Text("站点设置").tag(6) }.pickerStyle(.menu).padding(.horizontal)
             if !model.isAdmin { Text("只有管理员能用这里。").foregroundStyle(.secondary).padding() }
+            else if tab >= 3 { AdminExtraView(tab: tab) }
             else {
                 List {
                     switch tab {
@@ -223,7 +224,7 @@ struct AdminView: View {
             }
         }
         .navigationTitle("管理")
-        .task(id: tab) { if model.isAdmin { switch tab { case 0: await model.loadMembers(); case 1: await model.loadUsageAll(); default: await model.loadMcp() } } }
+        .task(id: tab) { if model.isAdmin { switch tab { case 0: await model.loadMembers(); case 1: await model.loadUsageAll(); case 2: await model.loadMcp(); default: break } } }
         .sheet(isPresented: $adding) { MemberSheet(member: nil) }
         .sheet(item: $resetting) { MemberSheet(member: $0) }
         .confirmationDialog("删除成员", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), presenting: deleting) { m in

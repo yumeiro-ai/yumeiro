@@ -370,6 +370,24 @@ ipcMain.handle('remote:set', async (event, patch) => {
   return remote.state();
 });
 ipcMain.handle('remote:unpair', () => remote.unpair());
+// 壁纸只存在这台电脑上（和服务器、账号无关）：选一张本机图片，缩小后存进用户数据目录
+const wallFile = () => path.join(app.getPath('userData'), 'wallpaper.jpg');
+ipcMain.handle('wall:pick', async event => {
+  const owner = BrowserWindow.fromWebContents(event.sender) || undefined;
+  const r = await dialog.showOpenDialog(owner, { title: '选择壁纸图片', properties: ['openFile'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
+  if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true };
+  try {
+    const file = r.filePaths[0];
+    if (!/\.(png|jpe?g|webp|gif|bmp)$/i.test(file)) return { ok: false, error: '只支持 png / jpg / webp / gif / bmp 图片' };
+    const st = fs.statSync(file); if (!st.isFile() || st.size > 40 * 1024 * 1024) return { ok: false, error: '图片太大（上限 40 MB）' };
+    let img = nativeImage.createFromBuffer(fs.readFileSync(file));
+    if (img.isEmpty()) return { ok: false, error: '这个文件不是可以打开的图片' };
+    const { width } = img.getSize(); if (width > 2560) img = img.resize({ width: 2560, quality: 'good' });
+    fs.writeFileSync(wallFile(), img.toJPEG(88)); return { ok: true };
+  } catch (e) { return { ok: false, error: '读取图片失败：' + String(e && e.message || e).slice(0, 120) }; }
+});
+ipcMain.handle('wall:get', () => { try { return 'data:image/jpeg;base64,' + fs.readFileSync(wallFile()).toString('base64'); } catch { return ''; } });
+ipcMain.handle('wall:clear', () => { try { fs.unlinkSync(wallFile()); } catch { /* 本来就没有 */ } return true; });
 ipcMain.handle('app:file', (event, apiPath) => new Promise(resolve => {      // 壁纸等需要登录的图片：取回来变成 data: 地址给页面用
   const s = serverOrigin(); if (!s || !String(apiPath).startsWith('/api/')) { resolve(''); return; }
   const req = net.request({ method: 'GET', url: s + apiPath, session: session.defaultSession, useSessionCookies: true, redirect: 'error' });

@@ -30,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -75,7 +76,7 @@ internal fun Item(modifier: Modifier = Modifier, content: @Composable () -> Unit
 }
 
 @Composable
-private fun Field(value: String, onChange: (String) -> Unit, label: String, lines: Int = 1, password: Boolean = false) {
+internal fun Field(value: String, onChange: (String) -> Unit, label: String, lines: Int = 1, password: Boolean = false) {
     OutlinedTextField(value, onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), singleLine = lines == 1, minLines = lines, maxLines = if (lines == 1) 1 else 8,
         visualTransformation = if (password) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = if (password) KeyboardType.Password else KeyboardType.Text))
@@ -190,11 +191,11 @@ fun MarketScreen(vm: AppViewModel) {
 @Composable
 fun AdminScreen(vm: AppViewModel) {
     var tab by remember { mutableStateOf(0) }
-    LaunchedEffect(tab) { if (vm.isAdmin) when (tab) { 0 -> vm.loadMembers(); 1 -> vm.loadUsageAll(); else -> vm.loadMcp() } }
+    LaunchedEffect(tab) { if (vm.isAdmin) { vm.adminError = ""; when (tab) { 0 -> vm.loadMembers(); 1 -> vm.loadUsageAll(); 2 -> vm.loadMcp(); 3 -> vm.loadAdminSecurity(); 4 -> vm.loadAdminPlan(); 5 -> vm.loadAdminPricing(); else -> vm.loadAdminSite() } } }
     Page("管理", { vm.openSettings() }) {
         if (!vm.isAdmin) { Text("只有管理员能用这里。", color = Muted); return@Page }
-        TabRow(tab, containerColor = Color.Transparent, contentColor = Ink) { listOf("成员", "用量", "MCP").forEachIndexed { i, t -> Tab(tab == i, { tab = i }, text = { Text(t) }) } }
-        when (tab) { 0 -> MembersTab(vm); 1 -> UsageTab(vm); else -> McpTab(vm) }
+        ScrollableTabRow(tab, containerColor = Color.Transparent, contentColor = Ink, edgePadding = 0.dp) { listOf("成员", "用量", "MCP", "安全与熔断", "套餐与授权", "模型价格", "站点设置").forEachIndexed { i, t -> Tab(tab == i, { tab = i }, text = { Text(t) }) } }
+        when (tab) { 0 -> MembersTab(vm); 1 -> UsageTab(vm); 2 -> McpTab(vm); 3 -> SecurityTab(vm); 4 -> PlanTab(vm); 5 -> PricingTab(vm); else -> SiteTab(vm) }
     }
 }
 

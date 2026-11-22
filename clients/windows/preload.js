@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld('yumeiroApp', {
   // 客户端自己的主界面（app.html）用：服务器接口走主进程代理；聊天流式回复；嵌在右侧的服务器功能页
   api: (method, path, body) => ipcRenderer.invoke('app:api', String(method || 'GET'), String(path || ''), body),
   file: path => ipcRenderer.invoke('app:file', String(path || '')),
+  wallPick: () => ipcRenderer.invoke('wall:pick'),
+  wallGet: () => ipcRenderer.invoke('wall:get'),
+  wallClear: () => ipcRenderer.invoke('wall:clear'),
   upload: (name, bytes, id) => ipcRenderer.invoke('app:upload', String(name || ''), bytes, Number(id) || 0),
   uploadAbort: id => ipcRenderer.send('app:upload-abort', Number(id) || 0),
   onUploadProgress: callback => ipcRenderer.on('app:upload-progress', (event, id, current, total) => callback(id, current, total)),

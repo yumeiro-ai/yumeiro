@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 选项弹窗：点一项就选中并关闭。长列表（模型、智能体、壁纸…）都用它。
 struct PickerSheet: View {
@@ -114,9 +115,13 @@ struct SettingsView: View {
     @State private var clearAsk = false
     @State private var pwd = false
 
+    @State private var pickingWallpaper = false
+    // 壁纸只保存在这台设备上：无 / 本机图片 / 内置渐变 / 服务器壁纸库里的某一张（只记名字，服务器改默认壁纸不会影响你）
     private var wallOptions: [Opt] {
-        [Opt(id: "", label: "无壁纸")] + wallPresets.map { Opt(id: "preset:" + $0.id, label: $0.label, sub: "渐变") } +
-        model.wallItems.filter { $0.kind == "image" }.map { Opt(id: $0.name, label: ($0.name as NSString).deletingPathExtension, sub: "服务器壁纸") }
+        [Opt(id: "", label: "无壁纸"), Opt(id: "pick-local", label: "从本机选一张图片…", sub: "只在这台设备上生效")] +
+        (model.wallpaper == "local" ? [Opt(id: "local", label: "我的图片", sub: "本机")] : []) +
+        wallPresets.map { Opt(id: "preset:" + $0.id, label: $0.label, sub: "渐变") } +
+        model.wallItems.filter { $0.kind == "image" }.map { Opt(id: "server:" + $0.name, label: ($0.name as NSString).deletingPathExtension, sub: "服务器壁纸库") }
     }
     private let dims = [Opt(id: "0", label: "最亮 0%"), Opt(id: "20", label: "20%"), Opt(id: "35", label: "标准 35%"), Opt(id: "50", label: "50%"), Opt(id: "65", label: "65%"), Opt(id: "80", label: "最暗 80%")]
     private let fonts = [Opt(id: "0.9", label: "小"), Opt(id: "1.0", label: "标准"), Opt(id: "1.15", label: "大"), Opt(id: "1.3", label: "特大")]
@@ -161,16 +166,16 @@ struct SettingsView: View {
             }
             Section("外观（只影响这台设备的显示方式）") {
                 row("主题", themes.first { $0.id == model.themeMode }?.label ?? "深色", "theme")
-                row("壁纸", wallOptions.first { $0.id == model.wallpaper }?.label ?? "无", "wp")
+                row("壁纸", model.wallpaperLabel, "wp")
                 row("壁纸遮罩", dims.first { $0.id == String(model.wallDim) }?.label ?? "\(model.wallDim)%", "dim")
                 row("字体大小", fonts.first { $0.id == String(model.fontScale) }?.label ?? "标准", "font")
             }
             Section("关于") {
-                Text("Yumeiro 苹果原生客户端 1.0.0").font(.footnote).foregroundStyle(.secondary)
+                Text("Yumeiro 苹果原生客户端 0.46.1").font(.footnote).foregroundStyle(.secondary)
                 Text("Powered by Yumeiro").font(.caption.bold())
                 Text("使用 Cindy、Dash黄一孟 的项目进行制作 · 制作者：BYL").font(.caption2).foregroundStyle(.secondary)
                 Text("以 Apache License 2.0 开源；使用、修改、分发请保留署名与许可证").font(.caption2).foregroundStyle(.secondary)
-                Text("管理后台（模型服务商、MCP 添加编辑等）请在浏览器里打开 服务器地址/admin。").font(.caption).foregroundStyle(.secondary)
+                Text("管理员可以在“管理”里改成员、安全与熔断、套餐、模型价格和站点设置；模型服务商、MCP 添加编辑等更细的设置请在浏览器里打开 服务器地址/admin。").font(.caption).foregroundStyle(.secondary)
             }
             Section { Button("退出登录 / 切换账号", role: .destructive) { Task { await model.logout() } } }
         }
@@ -180,10 +185,18 @@ struct SettingsView: View {
             case "model": PickerSheet(title: "默认对话模型", options: model.models.map { Opt(id: $0.ref, label: $0.label, sub: $0.provider) }, selected: model.selectedModel) { model.chooseModel($0) }
             case "agent": PickerSheet(title: "新对话使用的智能体", options: [Opt(id: "", label: "不使用智能体", sub: "普通对话")] + model.agents.map { Opt(id: $0.id, label: $0.name, sub: $0.description) }, selected: model.selectedAgent) { model.selectedAgent = $0 }
             case "theme": PickerSheet(title: "主题", options: themes, selected: model.themeMode) { model.setTheme($0) }
-            case "wp": PickerSheet(title: "壁纸", options: wallOptions, selected: model.wallpaper) { v in Task { await model.chooseWallpaper(v) } }
+            case "wp": PickerSheet(title: "壁纸（只在这台设备上生效）", options: wallOptions, selected: model.wallpaper) { v in
+                if v == "pick-local" { pickingWallpaper = true } else { Task { await model.chooseWallpaper(v) } }
+            }
             case "dim": PickerSheet(title: "壁纸遮罩（越大越暗）", options: dims, selected: String(model.wallDim)) { v in Task { await model.chooseWallDim(Int(v) ?? 35) } }
             default: PickerSheet(title: "字体大小", options: fonts, selected: String(model.fontScale)) { model.setFont(Double($0) ?? 1) }
             }
+        }
+        .fileImporter(isPresented: $pickingWallpaper, allowedContentTypes: [.image], allowsMultipleSelection: false) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            let scoped = url.startAccessingSecurityScopedResource(); defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { model.say("读取图片失败"); return }
+            Task { if let err = await model.setLocalWallpaper(data) { model.say(err) } else { model.say("已设为壁纸（只在这台设备上生效）") } }
         }
         .alert("添加记忆", isPresented: $addMemory) {
             TextField("例如：我是前端工程师，偏好简洁回答", text: $memoryDraft)

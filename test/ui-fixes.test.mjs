@@ -246,7 +246,7 @@ test('Windows 客户端：收起侧栏后主区域占满整行（侧栏 display:
   }
 });
 
-test('壁纸：Windows 客户端和安卓版按服务器的 0–80 百分数处理遮罩，并支持预设渐变；安卓从 /api/wallpapers 取图', () => {
+test('壁纸：Windows 客户端和安卓版按 0–80 百分数处理遮罩，并支持预设渐变；壁纸选择只存本机，不读写服务器的壁纸偏好', () => {
   const win = read('clients/windows/app.js');
   assert.match(win, /WALL_PRESETS/);
   assert.match(win, /range\.max = '80'/);
@@ -254,7 +254,15 @@ test('壁纸：Windows 客户端和安卓版按服务器的 0–80 百分数处�
   const vm = read('clients/android-native/app/src/main/java/org/yumeiro/app/AppViewModel.kt');
   assert.match(vm, /\/api\/wallpapers\/file\//);
   assert.doesNotMatch(vm, /\/seed\/wallpapers/);
-  assert.match(vm, /\/api\/wallpapers\/pref/);
+  // 壁纸只属于这台设备：三个客户端都不再读写服务器账号里的壁纸偏好，也不跟随服务器默认壁纸
+  assert.doesNotMatch(vm, /\/api\/wallpapers\/pref/);
+  assert.doesNotMatch(win, /\/api\/wallpapers\/pref/);
+  assert.doesNotMatch(win, /defaultWallpaper/);
+  assert.doesNotMatch(vm, /(optString|getString)\("defaultWallpaper"\)/);
+  assert.match(win, /yumeiro\.wall/);
+  const apple = read('clients/apple/Sources/Shared/AppModel.swift');
+  assert.doesNotMatch(apple, /wallpapers\/pref/);
+  assert.doesNotMatch(apple, /str\("defaultWallpaper"\)/);
 });
 
 test('页面弹窗：前端脚本不再使用浏览器自带的 alert / confirm / prompt，统一走 dialog.js', async () => {

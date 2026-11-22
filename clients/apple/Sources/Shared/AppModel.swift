@@ -62,6 +62,8 @@ final class AppModel: ObservableObject {
         themeMode = session.themeMode
         fontScale = session.fontScale
         serverInput = session.server; emailInput = session.email; ignoreCertInput = session.ignoreCert
+        wallpaper = session.wallpaperChoice; wallDim = session.wallpaperDim
+        Task { await showWallpaper() }   // 壁纸在本机，登录前也能显示
         Task { await restore() }
     }
 
@@ -76,7 +78,7 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    private func expired() { session.clearLogin(); passwordInput = ""; loginError = "登录已过期，请重新登录"; screen = .login }
+    func expired() { session.clearLogin(); passwordInput = ""; loginError = "登录已过期，请重新登录"; screen = .login }
 
     // MARK: 登录 / 退出
     func restore() async {
@@ -108,13 +110,13 @@ final class AppModel: ObservableObject {
     func logout() async {
         stop()
         await api.logout()
-        convs = []; messages = []; pending = []; currentId = nil; title = "新对话"; me = [:]; workspaces = []; activeWorkspace = nil; wallImage = nil; wallGradient = nil; page = nil
+        convs = []; messages = []; pending = []; currentId = nil; title = "新对话"; me = [:]; workspaces = []; activeWorkspace = nil; page = nil
         screen = .login
     }
 
     private func enterApp() {
         screen = .chat
-        Task { await loadConvs(); await loadModels(); await loadConfig(); await loadUsage(); await loadAgents(); await loadMemories(); await loadWallpaperPrefs(); await loadWorkspaces() }
+        Task { await loadConvs(); await loadModels(); await loadConfig(); await loadUsage(); await loadAgents(); await loadMemories(); await loadWallpaperLibrary(); await showWallpaper(); await loadWorkspaces() }
     }
 
     // MARK: 数据
@@ -319,31 +321,76 @@ final class AppModel: ObservableObject {
     func setTheme(_ mode: String) { themeMode = mode; session.themeMode = mode }
     func setFont(_ scale: Double) { fontScale = scale; session.fontScale = scale }
 
-    /// 壁纸和网页、Windows、安卓共用服务器上的设置（/api/wallpapers）
-    func loadWallpaperPrefs() async {
+    // 壁纸只保存在这台设备上（UserDefaults + Application Support 里的一份图片），不读也不写服务器上的壁纸偏好和默认壁纸。
+    private var wallpaperFileURL: URL? {
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return nil }
+        let dir = base.appendingPathComponent("Yumeiro", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("wallpaper.jpg")
+    }
+
+    /// 设置页里显示的当前壁纸名称
+    var wallpaperLabel: String {
+        if wallpaper.isEmpty { return "无" }
+        if wallpaper == "local" { return "本机图片" }
+        if wallpaper.hasPrefix("server:") { return String(wallpaper.dropFirst(7)) }
+        return wallPresets.first { "preset:" + $0.id == wallpaper }?.label ?? "无"
+    }
+
+    /// 只读取服务器壁纸库的列表，供“从服务器壁纸库选一张”使用；不看服务器上的 pref / defaultWallpaper
+    func loadWallpaperLibrary() async {
         guard let d = await guarded(quiet: true, { try await api.call("GET", "/api/wallpapers") }) else { return }
         wallItems = d.list("items").map { WallItem(name: $0.str("name"), kind: $0.str("kind")) }
-        let pref = d.obj("pref")
-        if let pref = pref, !(pref["wallpaper"] is NSNull), pref["wallpaper"] != nil { wallpaper = pref.str("wallpaper") } else { wallpaper = d.str("defaultWallpaper") }
-        wallDim = pref?.int("dim") ?? 35
-        if pref?["dim"] == nil { wallDim = 35 }
+        if wallpaper.hasPrefix("server:") {
+            let name = String(wallpaper.dropFirst(7))
+            if !wallItems.contains(where: { $0.name == name && $0.kind == "image" }) { forgetWallpaper() }   // 服务器上已经没有这张：悄悄改回无壁纸
+        }
+    }
+
+    private func forgetWallpaper() {
+        wallpaper = ""; session.wallpaperChoice = ""; wallImage = nil; wallGradient = nil
+    }
+
+    func chooseWallpaper(_ choice: String) async {
+        wallpaper = choice; session.wallpaperChoice = choice
+        if choice != "local", let url = wallpaperFileURL { try? FileManager.default.removeItem(at: url) }
         await showWallpaper()
     }
-    func chooseWallpaper(_ name: String) async {
-        wallpaper = name; await showWallpaper()
-        _ = await guarded({ try await api.call("PUT", "/api/wallpapers/pref", json: ["wallpaper": name, "dim": wallDim]) })
+
+    func chooseWallDim(_ dim: Int) { wallDim = dim; session.wallpaperDim = dim }
+
+    /// 用设备上选的图片做壁纸：校验能解码、缩小到 2200 像素以内后存进 App 自己的目录。返回错误文字，成功返回 nil
+    func setLocalWallpaper(_ data: Data) async -> String? {
+        if data.isEmpty { return "图片是空的" }
+        if data.count > 40 * 1_048_576 { return "图片太大了（上限 40 MB）" }
+        guard let cg = makeThumbnail(data, maxSize: 2200) else { return "这个文件不是可以读取的图片" }
+        guard let jpeg = jpegData(cg), let url = wallpaperFileURL else { return "保存失败" }
+        do { try jpeg.write(to: url, options: .atomic) } catch { return "保存失败：" + error.localizedDescription }
+        wallpaper = "local"; session.wallpaperChoice = "local"
+        wallImage = cg; wallGradient = nil
+        return nil
     }
-    func chooseWallDim(_ dim: Int) async {
-        wallDim = dim
-        _ = await guarded({ try await api.call("PUT", "/api/wallpapers/pref", json: ["wallpaper": wallpaper, "dim": dim]) })
-    }
-    private func showWallpaper() async {
-        let preset = wallPresets.first { "preset:" + $0.id == wallpaper }
-        wallGradient = preset?.colors
-        let name = wallpaper == "preset:slideshow" ? (wallItems.first { $0.kind == "image" }?.name ?? "") : wallpaper
-        guard preset == nil, let file = wallItems.first(where: { $0.name == name && $0.kind == "image" }) else { wallImage = nil; return }
-        let encoded = file.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? file.name
-        if let r = try? await api.bytes("/api/wallpapers/file/\(encoded)", maxBytes: 12 * 1_048_576), let img = makeThumbnail(r.data, maxSize: 1800) { wallImage = img } else { wallImage = nil }
+
+    /// 按本机记住的选择显示壁纸；没有选择就是没有壁纸（不回退到服务器默认）
+    func showWallpaper() async {
+        let choice = wallpaper
+        if let preset = wallPresets.first(where: { "preset:" + $0.id == choice }) { wallGradient = preset.colors; wallImage = nil; return }
+        wallGradient = nil
+        if choice == "local" {
+            if let url = wallpaperFileURL, let data = try? Data(contentsOf: url), let cg = makeThumbnail(data, maxSize: 2200) { wallImage = cg } else { forgetWallpaper() }
+            return
+        }
+        guard choice.hasPrefix("server:") else { wallImage = nil; return }
+        let name = String(choice.dropFirst(7))
+        let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        do {
+            let r = try await api.bytes("/api/wallpapers/file/\(encoded)", maxBytes: 12 * 1_048_576)
+            guard wallpaper == choice else { return }
+            if let img = makeThumbnail(r.data, maxSize: 1800) { wallImage = img } else { forgetWallpaper() }
+        } catch let e as ApiError {
+            guard wallpaper == choice else { return }
+            if e.status == 404 { forgetWallpaper() } else { wallImage = nil }   // 网络或登录问题：先不显示，选择保留
+        } catch { if wallpaper == choice { wallImage = nil } }
     }
 
     // MARK: 智能体 / 技能 / 市场
