@@ -173,8 +173,16 @@ sync_code() {
   chmod 755 "$APP_DIR"; chmod -R go+rX "$APP_DIR"   # 服务以 yumeiro 用户运行：root 的 umask 过严（如 077）时目录会是 700，导致 status=200/CHDIR
 }
 npm_install() {
+  # 先装到临时目录，成功了才替换 node_modules：装不上（比如服务器连不上 npm 源）时旧依赖原样保留，服务不会因此起不来
   local reg=(); [ -n "$NPM_REGISTRY" ] && reg=(--registry "$NPM_REGISTRY")
-  ( cd "$APP_DIR" && npm ci --omit=dev "${reg[@]}" ) || die "npm 依赖安装失败。国内服务器可加 --npm-registry https://registry.npmmirror.com"
+  local tmp="$APP_DIR/.nm-new"; rm -rf "$tmp"; mkdir -p "$tmp"
+  cp "$APP_DIR/package.json" "$APP_DIR/package-lock.json" "$tmp/"
+  if ( cd "$tmp" && npm ci --omit=dev "${reg[@]}" ); then
+    rm -rf "$APP_DIR/node_modules"; mv "$tmp/node_modules" "$APP_DIR/node_modules"; rm -rf "$tmp"
+    chown -R root:root "$APP_DIR/node_modules"; chmod -R go+rX "$APP_DIR/node_modules"
+    return 0
+  fi
+  rm -rf "$tmp"; return 1
 }
 
 health() { # 等服务健康；$1 = 最长秒数
@@ -653,7 +661,7 @@ update)
   [ -f /etc/systemd/system/yumeiro-runner.service ] && WITH_RUNNER=1
   OLD_LOCK="$(sha256sum "$APP_DIR/package-lock.json" 2>/dev/null | cut -d' ' -f1 || true)"
   sync_code
-  [ "$OLD_LOCK" = "$(sha256sum "$APP_DIR/package-lock.json" | cut -d' ' -f1)" ] && [ -d "$APP_DIR/node_modules" ] || npm_install
+  [ "$OLD_LOCK" = "$(sha256sum "$APP_DIR/package-lock.json" | cut -d' ' -f1)" ] && [ -d "$APP_DIR/node_modules" ] || npm_install || { [ -d "$APP_DIR/node_modules" ] && warn "新依赖没有装上（多半是服务器连不上 npm 源），先沿用旧依赖继续升级；只影响用到新依赖的功能（如 AI 邮箱）。稍后可加 --npm-registry https://registry.npmmirror.com 重新执行 update" || die "npm 依赖安装失败。国内服务器可加 --npm-registry https://registry.npmmirror.com"; }
   if [ "$WITH_RUNNER" = 1 ] && [ "$NO_ENGINES" != 1 ]; then install_engines || warn "引擎升级没有全部成功，不影响服务；稍后可执行：sudo $0 engines"; fi
   # 旧版本装的服务器没有“网页更新助手”：补上令牌和环境变量，并把它启动起来，之后管理员就能在网页里上传压缩包更新（不用再敲命令）
   if [ "$WEB_SETUP" = 1 ]; then

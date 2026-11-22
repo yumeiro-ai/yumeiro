@@ -11,6 +11,8 @@ COPY --chown=node:node server.mjs storage.mjs providers.mjs collab.mjs platform-
 # 注意：上面这份 .mjs 清单要和 deploy/yumeiro-native.sh 里的保持一致（test/deploy-lists.test.mjs 会检查）。
 # 客户端安装包不打进镜像（.dockerignore 排除了 public/downloads），放在数据卷的 downloads/ 里，用 scripts/install-clients.mjs 上传。
 COPY --chown=node:node scripts ./scripts
+# server.mjs 启动时就会 import ./setup/setup-client.mjs，镜像里缺了它主服务一启动就退出，反向代理就会显示 502
+COPY --chown=node:node setup ./setup
 COPY --chown=node:node public ./public
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node

@@ -28,6 +28,15 @@ test('部署清单：Docker 与直装版复制的 .mjs 一致，且覆盖 server
   assert.deepEqual([...docker].sort(), [...native].sort(), '两份清单应当完全一致');
 });
 
+test('部署：server.mjs 静态引用的子目录模块（setup/）Docker 镜像和直装版也都要带上，否则启动即退出、网页 502', () => {
+  const dirs = [...new Set([...read('server.mjs').matchAll(/from\s+'\.\/([A-Za-z0-9_-]+)\/[A-Za-z0-9_.-]+\.mjs'/g)].map(m => m[1]))];
+  assert.ok(dirs.includes('setup'), '应该解析出 setup 目录');
+  for (const dir of dirs) {
+    assert.match(read('Dockerfile'), new RegExp('^COPY --chown=node:node ' + dir + ' \./' + dir + '$', 'm'), 'Dockerfile 没有复制 ' + dir + '/');
+    assert.ok(read('deploy/yumeiro-native.sh').includes('"$SRC"/' + dir + '/*.mjs'), 'deploy/yumeiro-native.sh 没有复制 ' + dir + '/');
+  }
+});
+
 test('部署：安装包不进镜像也不随程序部署；壁纸首次启动自动初始化；备份不带安装包', () => {
   assert.match(read('.dockerignore'), /^public\/downloads$/m, '.dockerignore 要排除 public/downloads');
   assert.match(read('Dockerfile'), /CMD .*seed-wallpapers\.mjs.*exec node server\.mjs/, 'Docker 启动前要先初始化壁纸');
