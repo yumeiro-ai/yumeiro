@@ -456,23 +456,44 @@
       tbl(['群聊', '创建者', '调用', '总 Token', '费用', '成员明细'], report.groups.map(x => el('tr', {}, [x.title + (x.deleted ? '（已删除）' : ''), x.owner, num(x.calls), num(x.totalTokens), cur + money(x.cost), x.members.map(m => `${m.label} ${num(m.totalTokens)} / ${cur}${money(m.cost)}`).join('；')].map(v => cell(v, true)))), '本月还没有群聊用量'));
     await renderPricing(body);
   }
-  // 模型价格：每百万 Token 的输入 / 输出单价。只填你实际支付的价格；留空的模型只统计 Token，不算费用。
+  // 模型价格：每百万 Token 的输入 / 输出单价；每个模型可以单独选货币符号。
+  // 服务商在模型列表里直接给价格的（如 OpenRouter），点“从服务商读取价格”自动填；其余的由你按实际账单填写。留空的模型只统计 Token，不算费用。
   async function renderPricing(body) {
     const data = await api('/api/admin/pricing'), err = errBox(), status = el('span', { class: 'team-note' });
-    const currency = el('input', { value: data.currency, maxLength: 6, style: 'width:70px' });
-    const rows = data.models.map(m => ({ m, input: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.input || '', placeholder: '输入', style: 'width:90px' }), output: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.output || '', placeholder: '输出', style: 'width:90px' }) }));
+    const SYMBOLS = [['¥', '¥ 人民币'], ['$', '$ 美元'], ['€', '€ 欧元'], ['£', '£ 英镑'], ['₩', '₩ 韩元'], ['₽', '₽ 卢布'], ['₹', '₹ 卢比']];
+    const symbolSelect = (value, extra) => { const list = SYMBOLS.some(([v]) => v === value) || !value ? SYMBOLS : [...SYMBOLS, [value, value]]; return el('select', {}, ...list.map(([v, t]) => el('option', { value: v, textContent: t, selected: v === value }))); };
+    const base = symbolSelect(data.currency);
+    const rows = data.models.map(m => ({ m, auto: false, cur: symbolSelect(m.price?.currency || data.currency), input: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.input || '', placeholder: '输入', style: 'width:90px' }), output: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.output || '', placeholder: '输出', style: 'width:90px' }), tag: el('span', { class: 'team-note' }) }));
+    const rateBox = el('div', {}), rateInputs = {};
+    const drawRates = () => {
+      const used = [...new Set(rows.filter(r => r.input.value || r.output.value).map(r => r.cur.value).filter(c => c && c !== base.value))];
+      rateBox.replaceChildren(...(used.length ? [el('p', { class: 'team-note', textContent: '有模型的货币和统计货币不同，费用合计时需要折算：' }), ...used.map(c => { const i = rateInputs[c] || (rateInputs[c] = el('input', { type: 'number', min: 0, step: 'any', value: data.rates?.[c] || '', placeholder: '汇率', style: 'width:110px' })); return el('label', { style: 'display:flex;gap:8px;align-items:center;font-size:13px;margin:4px 0' }, `1 ${c} =`, i, base.value); })] : []));
+    };
+    for (const r of rows) { r.cur.addEventListener('change', drawRates); r.input.addEventListener('input', drawRates); r.output.addEventListener('input', drawRates); }
+    base.addEventListener('change', drawRates);
     const save = async () => {
       try {
-        const models = {}; for (const r of rows) if (r.input.value || r.output.value) models[r.m.ref] = { input: Number(r.input.value || 0), output: Number(r.output.value || 0) };
-        const out = await api('/api/admin/pricing', { method: 'PUT', body: JSON.stringify({ currency: currency.value, models }) });
+        const models = {}; for (const r of rows) if (r.input.value || r.output.value) models[r.m.ref] = { input: Number(r.input.value || 0), output: Number(r.output.value || 0), currency: r.cur.value };
+        const rates = {}; for (const [c, i] of Object.entries(rateInputs)) if (i.value && i.isConnected) rates[c] = Number(i.value);
+        const out = await api('/api/admin/pricing', { method: 'PUT', body: JSON.stringify({ currency: base.value, models, rates }) });
         err.textContent = ''; status.textContent = '已保存（' + out.count + ' 个模型有价格），新产生的用量会按新价格计费';
       } catch (e) { err.textContent = e.message; }
     };
+    const sync = el('button', { type: 'button', class: 'secondary', textContent: '从服务商读取价格', on: { click: async () => {
+      err.textContent = ''; status.textContent = '正在读取…';
+      try {
+        const out = await api('/api/admin/pricing/sync', { method: 'POST', body: '{}' });
+        let n = 0; for (const r of rows) { const p = out.prices[r.m.ref]; if (!p) continue; r.input.value = p.input; r.output.value = p.output; r.cur.value = p.currency; r.cur._ymSync && r.cur._ymSync(); r.tag.textContent = '自动读取'; n++; }
+        drawRates(); status.textContent = `读到 ${n} 个模型的价格（还没保存，请检查后点“保存价格”）。` + out.report.map(x => `${x.name}：${x.detail}`).join('；');
+      } catch (e) { err.textContent = e.message; status.textContent = ''; }
+    } } });
     body.append(el('h4', { textContent: '模型价格（每百万 Token）' }),
-      el('div', { class: 'team-note', textContent: '按你从 API 服务商那里实际的计费单价填写；改价只影响之后的调用，历史费用不变。没填价格的模型只统计 Token。' }),
-      el('label', { style: 'font-size:13px' }, '货币符号 ', currency),
-      el('div', { style: 'display:grid;gap:6px;margin:8px 0' }, rows.length ? rows.map(r => el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' }, el('span', { style: 'flex:1;min-width:160px;word-break:break-all', textContent: r.m.label + '　' + r.m.providerName + (r.m.label !== r.m.ref ? '　' + r.m.ref : '') }), r.input, r.output)) : [el('div', { class: 'team-note', textContent: '还没有可用的模型，先在“模型服务商”里接入。' })]),
-      el('div', { style: 'display:flex;gap:10px;align-items:center' }, el('button', { type: 'button', class: 'primary', textContent: '保存价格', on: { click: save } }), status), err);
+      el('div', { class: 'team-note', textContent: '大多数官方 API 不会通过接口公布价格，所以这里不内置价格表（避免过期的数字）：服务商在模型列表里提供价格的会自动读取，其余请按你实际的账单单价填写，并给每个模型选货币符号。改价只影响之后的调用，历史费用不变。' }),
+      el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0' }, el('label', { style: 'font-size:13px;display:flex;gap:8px;align-items:center' }, '统计货币（合计用）', base), sync),
+      el('div', { style: 'display:grid;gap:8px;margin:8px 0' }, rows.length ? rows.map(r => el('div', { class: 'price-row' }, el('span', { class: 'price-name', textContent: r.m.label + '　' + r.m.providerName + (r.m.label !== r.m.ref ? '　' + r.m.ref : '') }), r.cur, r.input, r.output, r.tag)) : [el('p', { class: 'team-note', textContent: '还没有可用的模型，请先在“AI 接入”里添加。' })]),
+      rateBox,
+      el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, el('button', { type: 'button', class: 'primary', textContent: '保存价格', on: { click: save } }), status), err);
+    drawRates();
   }
   // 原生 append 会把数组转成 "[object HTMLDivElement]"；面板渲染大量使用 map() 生成的数组，这里让 append 自动展开数组并忽略空值。
   function flatBox() {
@@ -1433,43 +1454,35 @@
     body.append(el('div', { class: 'team-note', textContent: 'AI 只能读你选中的那一封邮件和写草稿；它不能自己发信，也看不到收件箱里的其他邮件。' }), ...parts, ok, err);
   }
 
-  // 套餐与授权：试用期不加锁，只展示分级；以后发版打开加锁后，需要在线购买或输入授权密钥
-  async function renderPlan(body, picked) {
+  // 套餐与授权：试用期所有功能都能用，这里先让管理员切换“当前使用的版本”；正式上线、有了在线购买链接后，会换成真正的购买和授权
+  async function renderPlan(body) {
     const d = await api('/api/admin/plan'), err = errBox(), ok = el('div', { class: 'team-note' });
     const rank = id => d.tiers.findIndex(t => t.id === id), tierName = id => (d.tiers.find(t => t.id === id) || {}).name || id;
-    picked = picked || d.tier;
-    const reload = async (p) => { body.replaceChildren(); await renderPlan(body, p); };
+    const reload = async () => { body.replaceChildren(); await renderPlan(body); };
     const key = el('input', { type: 'text', placeholder: '粘贴授权密钥（YML1.…）', autocomplete: 'off', style: 'width:100%' });
     const activate = el('button', { type: 'button', class: 'primary', textContent: '激活', on: { click: async () => { err.textContent = ''; if (!key.value.trim()) { err.textContent = '请先粘贴授权密钥'; return; } try { await api('/api/admin/plan/license', { method: 'POST', body: JSON.stringify({ key: key.value }) }); await reload(); } catch (e) { err.textContent = e.message; } } } });
     const remove = d.license ? el('button', { type: 'button', class: 'secondary', textContent: '移除授权', on: { click: async () => { try { await api('/api/admin/plan/license', { method: 'DELETE' }); await reload(); } catch (e) { err.textContent = e.message; } } } }) : null;
     const status = d.license
       ? `当前授权：${tierName(d.license.tier)}${d.license.org ? '　' + d.license.org : ''}　${d.license.exp ? '到期 ' + new Date(d.license.exp).toLocaleDateString() : '长期有效'}`
-      : '当前没有授权密钥，按免费版计算。' + (d.licenseError ? '（' + d.licenseError + '）' : '');
-    // 在线购买：跳转到发行方配置的 https 购买页，并带上想买的档位；真正的收款在那个页面完成
-    const buyHref = tier => { try { const u = new URL(d.purchaseUrl); u.searchParams.set('tier', tier); u.searchParams.set('members', String(d.members)); return u.toString(); } catch { return ''; } };
-    const buyButton = t => rank(t.id) > rank(d.tier) ? (d.purchaseUrl
-      ? el('a', { href: buyHref(t.id), target: '_blank', rel: 'noopener noreferrer', class: 'primary', style: 'display:inline-block;padding:8px 14px;border-radius:10px;text-decoration:none;text-align:center', textContent: '在线购买 ' + t.name })
-      : el('button', { type: 'button', class: 'secondary', disabled: true, title: '管理员还没有设置购买地址', textContent: '在线购买（未开通）' })) : null;
-    const cards = d.tiers.map(t => el('div', { class: 'team-card', role: 'button', tabindex: '0', 'aria-pressed': String(t.id === picked), style: 'cursor:pointer;display:flex;flex-direction:column;gap:6px;' + (t.id === picked ? 'outline:2px solid var(--accent,#e95164)' : ''), on: { click: () => reload(t.id), keydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reload(t.id); } } } },
-      el('h4', { style: 'margin:0', textContent: t.name + (t.id === d.tier ? '（当前）' : '') }),
-      el('p', { class: 'team-note', style: 'margin:0', textContent: t.blurb }),
-      el('p', { class: 'team-note', style: 'margin:0', textContent: `成员 ${t.seats || '不限'}　独立桌面 ${t.desktops || '无'}` }),
-      buyButton(t)));
-    const pickedTier = d.tiers.find(t => t.id === picked), included = d.features.filter(f => rank(f.tier) <= rank(picked));
-    const detail = el('div', { class: 'team-card' }, el('h4', { textContent: pickedTier.name + ' 包含的功能' }),
-      ...d.features.map(f => { const has = rank(f.tier) <= rank(picked); return el('div', { style: 'font-size:14px;padding:3px 0;opacity:' + (has ? 1 : 0.5), textContent: (has ? '✓ ' : '– ') + f.name + (f.tier !== 'free' ? `（${tierName(f.tier)}起）` : '') + (f.status === 'planned' ? '　规划中' : '') }); }),
-      el('p', { class: 'team-note', textContent: `共 ${included.length} 项功能。` }));
-    const url = el('input', { type: 'url', placeholder: 'https://… 发行方的购买页面', value: d.purchaseUrl || '', style: 'width:100%' });
-    const saveUrl = el('button', { type: 'button', class: 'secondary', textContent: '保存购买地址', on: { click: async () => { err.textContent = ''; try { await api('/api/admin/plan/purchase', { method: 'PUT', body: JSON.stringify({ url: url.value }) }); ok.textContent = '已保存。'; await reload(picked); } catch (e) { err.textContent = e.message; } } } });
+      : '当前没有授权密钥。试用期内可以直接切换下面的版本。' + (d.licenseError ? '（' + d.licenseError + '）' : '');
+    const switchTo = async id => { err.textContent = ''; try { await api('/api/admin/plan/tier', { method: 'PUT', body: JSON.stringify({ tier: id }) }); await reload(); } catch (e) { err.textContent = e.message; } };
+    const cards = d.tiers.map(t => {
+      const current = t.id === d.tier;
+      return el('div', { class: 'team-card plan-card' + (current ? ' on' : '') },
+        el('h4', { textContent: t.name }),
+        el('p', { class: 'team-note', textContent: t.blurb }),
+        el('p', { class: 'team-note', textContent: `成员 ${t.seats || '不限'}　独立桌面 ${t.desktops || '无'}` }),
+        el('div', { class: 'plan-feats' }, ...d.features.filter(f => f.tier === t.id).map(f => el('div', { textContent: '• ' + f.name + (f.status === 'planned' ? '（规划中）' : '') }))),
+        current ? el('button', { type: 'button', class: 'secondary', disabled: true, textContent: '当前版本' })
+          : el('button', { type: 'button', class: 'primary', disabled: Boolean(d.license) || d.enforced, title: d.license ? '已有授权密钥，版本由授权决定' : '', textContent: '切换到此版本', on: { click: () => switchTo(t.id) } }));
+    });
+    const here = d.tiers.find(t => t.id === d.tier);
     body.append(
-      el('div', { class: 'team-note', style: 'font-weight:650', textContent: d.enforced ? '当前已启用功能分级。' : '试用期：所有功能都可以使用，下面只标明将来属于哪一档。点一下卡片可以查看这一档包含的功能。' }),
+      el('div', { class: 'team-note', style: 'font-weight:650', textContent: d.enforced ? '当前已启用功能分级。' : `试用期：所有功能都可以使用。当前选择：${here.name}（只影响显示和以后的限额，不会锁住任何功能）。` }),
       el('div', { class: 'team-card' }, el('h4', { textContent: '授权' }), el('p', { class: 'team-note', textContent: status + `　成员 ${d.members} 人` }),
         key, el('div', { style: 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap' }, activate, remove), ok, err),
-      el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:12px 0' }, ...cards),
-      detail,
-      el('div', { class: 'team-card' }, el('h4', { textContent: '在线购买设置' }),
-        el('p', { class: 'team-note', textContent: '填写你的收款页面（支付宝 / 微信 / Stripe 等的商品页都行）。成员点“在线购买”会打开这个地址，并带上 tier（档位）和 members（成员数）；付款后用授权密钥激活。本程序不经手任何付款信息。' }),
-        url, el('div', { style: 'margin-top:8px' }, saveUrl)));
+      el('div', { class: 'plan-grid' }, ...cards),
+      el('p', { class: 'team-note', textContent: '正式上线后，这里会换成在线购买和授权密钥激活。' }));
   }
 
   // 引擎与隔离自检：不需要密钥、不调用模型。看引擎装没装好，以及运行器有没有守住隔离（不是 root、读不到主服务的密钥和数据、环境变量最小、工作区出不去）

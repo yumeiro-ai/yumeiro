@@ -107,7 +107,15 @@ export async function probeProvider({ baseUrl, apiKey, model }, fetchImpl = fetc
     // 有些服务（例如 Cindy 桌面端桥接）的模型编号是一长串哈希，名称在 name / label 字段里，一并返回供界面显示
     const labels = {};
     for (const item of items) { const id = item?.id ? String(item.id) : ''; const label = String(item?.label || item?.name || '').trim(); if (id && label && label !== id) labels[id] = label.slice(0, 120); }
-    return { ok: true, detail: `连接成功，发现 ${models.length} 个模型`, models: models.slice(0, 500), labels };
+    // 少数服务（如 OpenRouter）会在模型列表里直接给价格：pricing.prompt / completion 是“每 Token 的美元价”。读到就换算成每百万 Token。
+    const prices = {};
+    for (const item of items) {
+      const id = item?.id ? String(item.id) : '', p = item?.pricing; if (!id || !p) continue;
+      const input = Number(p.prompt), output = Number(p.completion);
+      if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0 || (!input && !output)) continue;
+      prices[id] = { input: Number((input * 1e6).toFixed(6)), output: Number((output * 1e6).toFixed(6)), currency: '$' };
+    }
+    return { ok: true, detail: `连接成功，发现 ${models.length} 个模型`, models: models.slice(0, 500), labels, prices };
   } catch (error) {
     return { ok: false, detail: error.name === 'TimeoutError' ? '连接超时' : '无法连接：' + (error.cause?.code || error.message) };
   }

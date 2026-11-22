@@ -97,11 +97,11 @@ test('服务器：邮箱域名限制作用于邀请和新建成员；套餐页�
     // 套餐页
     const plan = (await call('/api/admin/plan')).data;
     assert.equal(plan.enforced, false); assert.equal(plan.tier, 'free'); assert.equal(plan.tiers.length, 4); assert.ok(plan.features.length > 5);
-    assert.equal(plan.purchaseUrl, '');
-    assert.equal((await call('/api/admin/plan/purchase', 'PUT', { url: 'http://pay.example.com' })).status, 400, '购买地址必须是 https');
-    assert.equal((await call('/api/admin/plan/purchase', 'PUT', { url: 'javascript:alert(1)' })).status, 400);
-    assert.equal((await call('/api/admin/plan/purchase', 'PUT', { url: 'https://pay.example.com/buy' })).status, 200);
-    assert.equal((await call('/api/admin/plan')).data.purchaseUrl, 'https://pay.example.com/buy');
+    assert.equal(plan.source, 'none');
+    assert.equal((await call('/api/admin/plan/tier', 'PUT', { tier: 'god' })).status, 400);
+    assert.equal((await call('/api/admin/plan/tier', 'PUT', { tier: 'pro' })).status, 200);
+    const after = (await call('/api/admin/plan')).data; assert.equal(after.tier, 'pro'); assert.equal(after.source, 'trial'); assert.equal(after.enforced, false);
+    assert.equal((await call('/api/admin/plan/purchase', 'PUT', { url: 'https://x.com' })).status, 404, '购买地址设置已移除');
     assert.equal((await call('/api/admin/plan/license', 'POST', { key: 'YML1.bad.bad' })).status, 400);
     assert.equal((await call('/api/admin/plan/license', 'POST', { key: '' })).status, 400);
     // 普通成员不能看
@@ -109,5 +109,6 @@ test('服务器：邮箱域名限制作用于邀请和新建成员；套餐页�
     const md = await m.json(); const member = { cookie: m.headers.get('set-cookie').split(';')[0], csrf: md.csrfToken };
     assert.equal((await call('/api/admin/plan', 'GET', undefined, member)).status, 403);
     assert.equal((await call('/api/admin/plan/license', 'POST', { key: 'x' }, member)).status, 403);
+    assert.equal((await call('/api/admin/plan/tier', 'PUT', { tier: 'free' }, member)).status, 403);
   } finally { child.removeAllListeners('exit'); child.kill(); await new Promise(r2 => setTimeout(r2, 200)); await rm(dir, { recursive: true, force: true }).catch(() => {}); }
 });

@@ -487,3 +487,19 @@ select.ymsel-native{display:none!important}
 .ymsel-item[aria-disabled=true]{opacity:.45;cursor:not-allowed}
 .ymsel-group{padding:8px 10px 4px;font-size:12px;color:var(--muted,#777b86)}
 @media(max-width:640px){.ymsel-btn{font-size:16px;min-height:40px}.ymsel-item{padding:11px 12px;font-size:16px}}
+
+/* 卡片：之前 .team-card 没有样式，导致套餐、安全、邮箱页的卡片都是“裸”的 */
+.team-card{border:1px solid var(--line,#e7e8ec);border-radius:14px;padding:14px 16px;margin:12px 0;background:var(--ym-card,transparent);display:flex;flex-direction:column;gap:6px;min-width:0}
+.team-card>h4{margin:0 0 2px;font-size:15px}
+.team-card>.team-note,.team-card>p{margin:0}
+.plan-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:12px 0;align-items:stretch}
+.plan-grid .team-card{margin:0}
+.plan-card.on{border-color:var(--accent,#e95164);box-shadow:0 0 0 2px var(--accent-soft,#fde7ea)}
+.plan-card .plan-feats{display:grid;gap:3px;font-size:13px;flex:1}
+.plan-card button{margin-top:8px;align-self:flex-start}
+.price-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.price-name{flex:1;min-width:180px;word-break:break-all}
+/* 表单里的说明文字 / 宽输入框占满整行（之前被挤在左边一列里，右边一片空白） */
+.team-main .team-form>.team-note,.team-main .team-form>input.wide,.team-main .team-form>textarea{grid-column:1/-1;max-width:none}
+.team-main .team-form>.team-note>div{margin-top:6px;line-height:1.7}
+.team-main .team-form>.team-note>div:first-child{margin-top:0}

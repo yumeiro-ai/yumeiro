@@ -694,7 +694,9 @@ const modelBreaker=new Breaker(),userGuard=new RateGuard();
 const breakerConfig=()=>normalizeBreakerConfig(db.settings.breaker||{});
 const dlpPolicy=()=>normalizePolicy(db.settings.dlp||{});
 // 套餐与注册邮箱域名：试用期一律放行（PLAN_ENFORCEMENT=false），只展示分级
-const currentPlan=()=>effectivePlan(db.settings.license?.key);
+const TRIAL_TIERS=TIERS.map(t=>t.id);
+// 试用期：没有授权密钥时，管理员可以先选一个版本档位来用（不加锁，只影响显示和以后的限额）；正式加锁后这个选择不再生效
+const currentPlan=()=>{const plan=effectivePlan(db.settings.license?.key),trial=db.settings.trialTier;return plan.source==='none'&&!PLAN_ENFORCEMENT&&TRIAL_TIERS.includes(trial)?{...plan,tier:trial,source:'trial'}:plan};
 // 在线购买地址：管理员（发行方）在“套餐与授权”页填写，必须是 https；没填就用环境变量 YUMEIRO_PURCHASE_URL
 const purchaseUrl=()=>{const v=String(db.settings.purchase?.url||process.env.YUMEIRO_PURCHASE_URL||'').trim();return /^https:\/\/[^\s]+$/.test(v)&&v.length<=500?v:''};
 const featureOn=id=>featureAllowed(id,currentPlan().tier);
@@ -860,8 +862,13 @@ const hourTokens=userId=>db.stats[userId]?.hours?.[hourKey()]||0;
 const dayKey=(at=Date.now())=>{const d=new Date(at);return monthKey(at)+'-'+pad(d.getDate())};
 // ---- 价格与费用：管理员按模型设置“每百万 Token”的输入 / 输出单价；费用在记录用量时按当时的价格算好，之后改价不影响历史 ----
 function priceOf(model){const table=db.settings.pricing?.models||{},ref=String(model||'');return table[ref]||table[ref.split('/').slice(1).join('/')]||null}
+const rateOfCurrency=symbol=>{const base=pricingCurrency(),s=String(symbol||'').trim();if(!s||s===base)return 1;const r=Number(db.settings.pricing?.rates?.[s]);return Number.isFinite(r)&&r>0?r:1};
 function costOf(model,usage){
   const price=priceOf(model);if(!price||!usage)return 0;
+  const rate=rateOfCurrency(price.currency);
+  return rate*costRaw(price,usage);
+}
+function costRaw(price,usage){
   const split=usage.inputTokens!=null||usage.outputTokens!=null;
   return split?((usage.inputTokens||0)*(price.input||0)+(usage.outputTokens||0)*(price.output||0))/1e6:((usage.totalTokens||0)*(price.input||0))/1e6;
 }
@@ -2886,7 +2893,19 @@ const server=http.createServer(async(req,res)=>{
       const seen=new Set(),models=[];
       for(const item of modelCatalog(session.user)){if(seen.has(item.ref))continue;seen.add(item.ref);models.push({ref:item.ref,label:item.label||item.model,providerName:item.providerName,price:db.settings.pricing?.models?.[item.ref]||null})}
       for(const [ref,price]of Object.entries(db.settings.pricing?.models||{}))if(!seen.has(ref))models.push({ref,label:ref,providerName:'（已不在列表中）',price});
-      return json(res,200,{currency:pricingCurrency(),models});
+      const used=[...new Set(models.map(item=>item.price?.currency).filter(c=>c&&c!==pricingCurrency()))];
+      return json(res,200,{currency:pricingCurrency(),rates:db.settings.pricing?.rates||{},missingRates:used.filter(c=>!(Number(db.settings.pricing?.rates?.[c])>0)),models});
+    }
+    if(pathname==='/api/admin/pricing/sync'&&req.method==='POST'){
+      if(!isAdmin)return adminOnly();
+      const prices={},report=[];
+      for(const provider of enabledProviders().slice(0,30)){
+        const result=await probeProvider({baseUrl:provider.baseUrl,apiKey:provider.apiKey});
+        const found=Object.entries(result.prices||{}).filter(([id])=>provider.models.includes(id));
+        for(const [id,price]of found)prices[provider.slug+'/'+id]=price;
+        report.push({name:provider.name||provider.slug,ok:result.ok,count:found.length,detail:result.ok?(found.length?`读到 ${found.length} 个模型的价格`:'这个服务商没有在模型列表里提供价格，请手动填写'):result.detail});
+      }
+      return json(res,200,{prices,report});
     }
     if(pathname==='/api/admin/pricing'&&req.method==='PUT'){
       if(!isAdmin)return adminOnly();
@@ -2896,9 +2915,15 @@ const server=http.createServer(async(req,res)=>{
         if(!price)continue;
         const input=Number(price.input||0),output=Number(price.output||0);
         if(![input,output].every(n=>Number.isFinite(n)&&n>=0&&n<=1e6))return json(res,400,{error:'价格必须是 0–1000000 的数字：'+ref});
-        if(input||output)table[String(ref).slice(0,200)]={input,output};
+        const currency=String(price.currency||'').trim().slice(0,6);
+        if(input||output)table[String(ref).slice(0,200)]={input,output,...(currency?{currency}:{})};
       }
-      db.settings.pricing={currency:String(body.currency||'¥').trim().slice(0,6)||'¥',models:table};
+      const rates={};
+      for(const [symbol,value]of Object.entries(body.rates&&typeof body.rates==='object'&&!Array.isArray(body.rates)?body.rates:{}).slice(0,20)){
+        const n=Number(value);if(!(n>0&&n<=1e6))continue;
+        const key=String(symbol).trim().slice(0,6);if(key)rates[key]=n;
+      }
+      db.settings.pricing={currency:String(body.currency||'¥').trim().slice(0,6)||'¥',models:table,rates};
       addAudit(db,{userId:session.user.id,action:'settings.pricing',target:'pricing',detail:'已设置 '+Object.keys(table).length+' 个模型的价格',ip:clientIp(req)});await persist();
       return json(res,200,{currency:pricingCurrency(),count:Object.keys(table).length});
     }
@@ -2939,15 +2964,16 @@ const server=http.createServer(async(req,res)=>{
       if(!isAdmin)return adminOnly();
       const plan=currentPlan(),buy=purchaseUrl();
       return json(res,200,{enforced:PLAN_ENFORCEMENT,tier:plan.tier,license:plan.license?{id:plan.license.id,tier:plan.license.tier,org:plan.license.org,seats:plan.license.seats,exp:plan.license.exp}:null,licenseError:plan.error,
-        tiers:TIERS,features:FEATURES,members:Object.keys(db.users).length,seatLimit:seatLimit(plan.tier,true),purchaseUrl:buy,purchaseUrlEditable:true});
+        source:plan.source,tiers:TIERS,features:FEATURES,members:Object.keys(db.users).length,seatLimit:seatLimit(plan.tier,true),purchaseUrl:buy,purchaseUrlEditable:true});
     }
-    if(pathname==='/api/admin/plan/purchase'&&req.method==='PUT'){
+    if(pathname==='/api/admin/plan/tier'&&req.method==='PUT'){
       if(!isAdmin)return adminOnly();
-      const url=String((await readBody(req)).url||'').trim();
-      if(url&&!/^https:\/\/[^\s]+$/.test(url))return json(res,400,{error:'购买地址必须以 https:// 开头'});
-      if(url.length>500)return json(res,400,{error:'购买地址太长'});
-      db.settings.purchase={url};addAudit(db,{userId:session.user.id,action:'plan.purchase.update',ip:clientIp(req)});await persist();
-      return json(res,200,{ok:true,purchaseUrl:purchaseUrl()});
+      if(PLAN_ENFORCEMENT)return json(res,400,{error:'已经正式启用分级，请使用授权密钥'});
+      if(db.settings.license?.key)return json(res,400,{error:'当前已有授权密钥，版本由授权决定；如要切换请先移除授权'});
+      const tier=String((await readBody(req)).tier||'');
+      if(!TRIAL_TIERS.includes(tier))return json(res,400,{error:'没有这个版本'});
+      db.settings.trialTier=tier;addAudit(db,{userId:session.user.id,action:'plan.tier',detail:tier,ip:clientIp(req)});await persist();
+      return json(res,200,{ok:true,tier});
     }
     if(pathname==='/api/admin/plan/license'&&(req.method==='POST'||req.method==='DELETE')){
       if(!isAdmin)return adminOnly();
