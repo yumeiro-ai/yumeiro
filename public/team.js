@@ -337,7 +337,7 @@
     else if (app.hidden) { loaded = false; banner.hidden = true; try { wallLayer.hidden = true; } catch { /* 首次执行时壁纸层还没创建 */ } document.body.classList.remove('has-wallpaper'); return; }
     if (loaded) return;
     loaded = true;
-    if (!pageMode) { await refreshSession(); await loadAgents(); await loadModels(); await refreshAlerts(); await refreshServiceUpdateAlert(); loadWallpaper(); }
+    if (!pageMode) { const wall = loadWallpaper(); await refreshSession(); await wall; window.dispatchEvent(new Event('ym:home-ready')); await loadAgents(); await loadModels(); await refreshAlerts(); await refreshServiceUpdateAlert(); }
     else { loadWallpaper(); }
     // 第三方登录回到本站后（?panel=cindy）直接打开“Cindy 账号”面板；带 cindy_select/cindy_error 时留给绑定表单处理后再清理地址
     const params = new URLSearchParams(location.search);
@@ -363,6 +363,8 @@
     if (me) await open();
     bootDone();
   };
+  // 首页：登录检查一通过就立刻开始加载壁纸和账号信息，不用等下一个 1 秒的轮询
+  window.addEventListener('ym:app-shown', () => { if (!pageMode) tick(); });
   tick(); setInterval(tick, pageMode ? 400 : 1000);
   setInterval(() => { if (me?.role === 'admin') refreshServiceUpdateAlert(); }, 10 * 60 * 1000);
 
