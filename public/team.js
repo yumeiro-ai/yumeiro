@@ -100,7 +100,7 @@
     voice: ['♪', '语音识别', '让成员在聊天框里点麦克风说话，自动转成文字；可指定普通话、粤语、四川话等方言。复用“AI 接入”里的服务商。'],
     mcp: ['⛓', 'MCP 服务', '给 Claude Code / Codex / Pi 接入 MCP 工具（网页抓取、数据库、搜索等）。命令在运行器容器里执行，只有管理员能配置。'],
     mail: ['✉', 'AI 邮箱', '绑定你自己的公司邮箱，让 AI 帮你读信、起草回复。AI 只写草稿，发出去必须你本人点“确认发送”。'],
-    plan: ['★', '套餐与授权', '查看当前版本档位、每个功能属于哪一档，输入授权密钥。试用期所有功能都可用，不加锁。'],
+    plan: ['★', '套餐与授权', '目前全部功能向所有人开放；这里介绍各版本的分档，正式版开放购买后可在线购买或用授权密钥解锁。'],
     safety: ['⛨', '安全与熔断', '敏感内容拦截、机密工作区、模型熔断和费用上限；命中时拦截并告警。只记录谁、什么时候、命中什么规则，不记录内容。'],
     engines: ['⌘', '智能体引擎', '配置 Claude Code / Codex / Pi 的密钥、默认模型和允许成员选择的模型。'],
     desktop: ['▭', '桌面端', '在浏览器里打开服务器上的 Cindy 桌面端，用来登录官方账号并向团队提供 Cindy 模型。'],
@@ -1456,35 +1456,20 @@
     body.append(el('div', { class: 'team-note', textContent: 'AI 只能读你选中的那一封邮件和写草稿；它不能自己发信，也看不到收件箱里的其他邮件。' }), ...parts, ok, err);
   }
 
-  // 套餐与授权：试用期所有功能都能用，这里先让管理员切换“当前使用的版本”；正式上线、有了在线购买链接后，会换成真正的购买和授权
+  // 套餐与授权：目前所有功能向所有人开放；各版本档位只作介绍，正式版开放购买后再接入购买和授权
   async function renderPlan(body) {
-    const d = await api('/api/admin/plan'), err = errBox(), ok = el('div', { class: 'team-note' });
-    const rank = id => d.tiers.findIndex(t => t.id === id), tierName = id => (d.tiers.find(t => t.id === id) || {}).name || id;
-    const reload = async () => { body.replaceChildren(); await renderPlan(body); };
-    const key = el('input', { type: 'text', placeholder: '粘贴授权密钥（YML1.…）', autocomplete: 'off', style: 'width:100%' });
-    const activate = el('button', { type: 'button', class: 'primary', textContent: '激活', on: { click: async () => { err.textContent = ''; if (!key.value.trim()) { err.textContent = '请先粘贴授权密钥'; return; } try { await api('/api/admin/plan/license', { method: 'POST', body: JSON.stringify({ key: key.value }) }); await reload(); } catch (e) { err.textContent = e.message; } } } });
-    const remove = d.license ? el('button', { type: 'button', class: 'secondary', textContent: '移除授权', on: { click: async () => { try { await api('/api/admin/plan/license', { method: 'DELETE' }); await reload(); } catch (e) { err.textContent = e.message; } } } }) : null;
-    const status = d.license
-      ? `当前授权：${tierName(d.license.tier)}${d.license.org ? '　' + d.license.org : ''}　${d.license.exp ? '到期 ' + new Date(d.license.exp).toLocaleDateString() : '长期有效'}`
-      : '当前没有授权密钥。试用期内可以直接切换下面的版本。' + (d.licenseError ? '（' + d.licenseError + '）' : '');
-    const switchTo = async id => { err.textContent = ''; try { await api('/api/admin/plan/tier', { method: 'PUT', body: JSON.stringify({ tier: id }) }); await reload(); } catch (e) { err.textContent = e.message; } };
-    const cards = d.tiers.map(t => {
-      const current = t.id === d.tier;
-      return el('div', { class: 'team-card plan-card' + (current ? ' on' : '') },
-        el('h4', { textContent: t.name }),
-        el('p', { class: 'team-note', textContent: t.blurb }),
-        el('p', { class: 'team-note', textContent: `成员 ${t.seats || '不限'}　独立桌面 ${t.desktops || '无'}` }),
-        el('div', { class: 'plan-feats' }, ...d.features.filter(f => f.tier === t.id).map(f => el('div', { textContent: '• ' + f.name + (f.status === 'planned' ? '（规划中）' : '') }))),
-        current ? el('button', { type: 'button', class: 'secondary', disabled: true, textContent: '当前版本' })
-          : el('button', { type: 'button', class: 'primary', disabled: Boolean(d.license) || d.enforced, title: d.license ? '已有授权密钥，版本由授权决定' : '', textContent: '切换到此版本', on: { click: () => switchTo(t.id) } }));
-    });
-    const here = d.tiers.find(t => t.id === d.tier);
+    const d = await api('/api/admin/plan');
+    const cards = d.tiers.map(t => el('div', { class: 'team-card plan-card' },
+      el('h4', { textContent: t.name }),
+      el('p', { class: 'team-note', textContent: t.blurb }),
+      el('p', { class: 'team-note', textContent: `成员 ${t.seats || '不限'}　独立桌面 ${t.desktops || '无'}` }),
+      el('div', { class: 'plan-feats' }, ...d.features.filter(f => f.tier === t.id).map(f => el('div', { textContent: '• ' + f.name + (f.status === 'planned' ? '（规划中）' : '') }))),
+      el('button', { type: 'button', class: 'secondary', disabled: true, textContent: '即将开放购买' })));
     body.append(
-      el('div', { class: 'team-note', style: 'font-weight:650', textContent: d.enforced ? '当前已启用功能分级。' : `试用期：所有功能都可以使用。当前选择：${here.name}（只影响显示和以后的限额，不会锁住任何功能）。` }),
-      el('div', { class: 'team-card' }, el('h4', { textContent: '授权' }), el('p', { class: 'team-note', textContent: status + `　成员 ${d.members} 人` }),
-        key, el('div', { style: 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap' }, activate, remove), ok, err),
-      el('div', { class: 'plan-grid' }, ...cards),
-      el('p', { class: 'team-note', textContent: '正式上线后，这里会换成在线购买和授权密钥激活。' }));
+      el('div', { class: 'team-card plan-open' }, el('h4', { textContent: '现在：全部功能向所有人开放' }),
+        el('p', { class: 'team-note', textContent: `目前处于试用期，下面所有版本的功能都可以直接使用，不需要购买，也不需要授权密钥（当前 ${d.members} 位成员）。` }),
+        el('p', { class: 'team-note', textContent: '正式版本发布后会开放购买：到时候按下面的版本分档，可以在线购买，或用授权密钥解锁完整功能。' })),
+      el('div', { class: 'plan-grid' }, ...cards));
   }
 
   // 引擎与隔离自检：不需要密钥、不调用模型。看引擎装没装好，以及运行器有没有守住隔离（不是 root、读不到主服务的密钥和数据、环境变量最小、工作区出不去）
