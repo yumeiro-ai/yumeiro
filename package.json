@@ -1,6 +1,6 @@
 {
   "name": "yumeiro-web",
-  "version": "0.46.1",
+  "version": "0.46.2",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",

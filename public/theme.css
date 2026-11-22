@@ -503,3 +503,13 @@ select.ymsel-native{display:none!important}
 .team-main .team-form>.team-note,.team-main .team-form>input.wide,.team-main .team-form>textarea{grid-column:1/-1;max-width:none}
 .team-main .team-form>.team-note>div{margin-top:6px;line-height:1.7}
 .team-main .team-form>.team-note>div:first-child{margin-top:0}
+
+/* 输入框下面的 模型 / 引擎 / 智能体 选择器：名字太长就用省略号，不撑开一整行 */
+.composer-picks .ymsel{flex:0 1 auto;min-width:0;max-width:48%}
+.composer-picks .ymsel-btn{min-height:30px;padding:3px 8px;font-size:12px;gap:4px}
+.composer-picks .ymsel-text{max-width:30vw}
+@media(max-width:640px){.composer-picks .ymsel{max-width:46%}.composer-picks .ymsel-btn{font-size:12px;min-height:32px}.composer-picks .ymsel-text{max-width:34vw}}
+/* 价格页（手机）：第一行模型名，第二行 货币 + 输入 + 输出 */
+.price-row .ymsel{flex:0 0 auto;min-width:64px}
+.price-row input{min-width:0;width:96px}
+@media(max-width:640px){.price-name{flex:1 0 100%;min-width:0}.price-row{gap:6px}.price-row .ymsel{max-width:30%}.price-row input{flex:1 1 70px;width:auto}}

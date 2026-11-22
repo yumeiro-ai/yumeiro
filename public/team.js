@@ -460,10 +460,12 @@
   }
   // 模型价格：每百万 Token 的输入 / 输出单价；每个模型可以单独选货币符号。
   // 服务商在模型列表里直接给价格的（如 OpenRouter），点“从服务商读取价格”自动填；其余的由你按实际账单填写。留空的模型只统计 Token，不算费用。
+  // 模型名只显示名字：去掉内部编号（一长串十六进制）和过长的部分，完整内容放在鼠标悬停提示里
+  const shortModel = label => String(label || '').replace(/\b[0-9a-f]{12,}\b/gi, '').replace(/\s{2,}/g, ' ').trim().slice(0, 40);
   async function renderPricing(body) {
     const data = await api('/api/admin/pricing'), err = errBox(), status = el('span', { class: 'team-note' });
     const SYMBOLS = [['¥', '¥ 人民币'], ['$', '$ 美元'], ['€', '€ 欧元'], ['£', '£ 英镑'], ['₩', '₩ 韩元'], ['₽', '₽ 卢布'], ['₹', '₹ 卢比']];
-    const symbolSelect = (value, extra) => { const list = SYMBOLS.some(([v]) => v === value) || !value ? SYMBOLS : [...SYMBOLS, [value, value]]; return el('select', {}, ...list.map(([v, t]) => el('option', { value: v, textContent: t, selected: v === value }))); };
+    const symbolSelect = (value, extra) => { const list = SYMBOLS.some(([v]) => v === value) || !value ? SYMBOLS : [...SYMBOLS, [value, value]]; return el('select', {}, ...list.map(([v, t]) => { const o = el('option', { value: v, textContent: t, selected: v === value }); o.setAttribute('data-short', v); return o; })); };
     const base = symbolSelect(data.currency);
     const rows = data.models.map(m => ({ m, auto: false, cur: symbolSelect(m.price?.currency || data.currency), input: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.input || '', placeholder: '输入', style: 'width:90px' }), output: el('input', { type: 'number', min: 0, step: 'any', value: m.price?.output || '', placeholder: '输出', style: 'width:90px' }), tag: el('span', { class: 'team-note' }) }));
     const rateBox = el('div', {}), rateInputs = {};
@@ -492,7 +494,7 @@
     body.append(el('h4', { textContent: '模型价格（每百万 Token）' }),
       el('div', { class: 'team-note', textContent: '大多数官方 API 不会通过接口公布价格，所以这里不内置价格表（避免过期的数字）：服务商在模型列表里提供价格的会自动读取，其余请按你实际的账单单价填写，并给每个模型选货币符号。改价只影响之后的调用，历史费用不变。' }),
       el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:8px 0' }, el('label', { style: 'font-size:13px;display:flex;gap:8px;align-items:center' }, '统计货币（合计用）', base), sync),
-      el('div', { style: 'display:grid;gap:8px;margin:8px 0' }, rows.length ? rows.map(r => el('div', { class: 'price-row' }, el('span', { class: 'price-name', textContent: r.m.label + '　' + r.m.providerName + (r.m.label !== r.m.ref ? '　' + r.m.ref : '') }), r.cur, r.input, r.output, r.tag)) : [el('p', { class: 'team-note', textContent: '还没有可用的模型，请先在“AI 接入”里添加。' })]),
+      el('div', { style: 'display:grid;gap:8px;margin:8px 0' }, rows.length ? rows.map(r => el('div', { class: 'price-row' }, el('span', { class: 'price-name', title: r.m.label + '　' + r.m.providerName + '　' + r.m.ref, textContent: shortModel(r.m.label) + (r.m.providerName ? '　' + r.m.providerName : '') }), r.cur, r.input, r.output, r.tag)) : [el('p', { class: 'team-note', textContent: '还没有可用的模型，请先在“AI 接入”里添加。' })]),
       rateBox,
       el('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap' }, el('button', { type: 'button', class: 'primary', textContent: '保存价格', on: { click: save } }), status), err);
     drawRates();

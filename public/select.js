@@ -78,17 +78,19 @@
   function enhance(sel) {
     if (sel._ym || sel.multiple || sel.size > 1 || sel.hasAttribute('data-native')) return;
     sel._ym = true;
-    var cs = getComputedStyle(sel), width = sel.offsetWidth;
+    var cs = getComputedStyle(sel);
     var wrap = document.createElement('span'); wrap.className = 'ymsel';
-    if (width) wrap.style.width = width + 'px';
-    ['flex', 'margin', 'alignSelf', 'gridColumn'].forEach(function (k) { if (cs[k]) wrap.style[k] = cs[k]; });
+    // 宽度：原来的 select 是“撑满一行”的就撑满；否则跟着内容走（不能照抄当时的像素宽度——选项还没加载时它只有几十像素，文字会被挤没）
+    var parent = sel.parentElement, fill = cs.display === 'block' && parent && sel.offsetWidth >= parent.clientWidth * 0.9 && sel.offsetWidth > 120;
+    if (fill) { wrap.style.display = 'block'; wrap.style.width = '100%'; }
+    ['flex', 'margin', 'alignSelf', 'gridColumn', 'maxWidth', 'minWidth'].forEach(function (k) { var v = cs[k]; if (v && v !== 'none' && v !== 'auto' && v !== '0px' && v !== 'normal') wrap.style[k] = v; });
     var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'ymsel-btn'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false');
     var text = document.createElement('span'); text.className = 'ymsel-text'; var caret = document.createElement('span'); caret.className = 'ymsel-caret'; caret.setAttribute('aria-hidden', 'true'); caret.textContent = '▾';
     btn.append(text, caret); wrap.append(btn);
     var label = sel.getAttribute('aria-label') || (sel.labels && sel.labels[0] && sel.labels[0].textContent.trim().slice(0, 40)) || sel.title; if (label) btn.setAttribute('aria-label', label);
     sel.after(wrap); sel.classList.add('ymsel-native'); sel.setAttribute('aria-hidden', 'true'); sel.tabIndex = -1;
     wrap._sel = sel;
-    var sync = function () { var o = sel.options[sel.selectedIndex]; text.textContent = o ? o.text : ''; text.classList.toggle('ph', !o || !o.value); btn.disabled = sel.disabled; wrap.classList.toggle('off', sel.disabled); };
+    var sync = function () { var o = sel.options[sel.selectedIndex]; text.textContent = o ? (o.getAttribute('data-short') || o.text) : ''; text.classList.toggle('ph', !o || !o.value); btn.disabled = sel.disabled; wrap.classList.toggle('off', sel.disabled); };
     sel._ymSync = sync; sync();
     btn.addEventListener('click', function () { open(sel, btn); });
     btn.addEventListener('keydown', function (e) { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); open(sel, btn); } });
