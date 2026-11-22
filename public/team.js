@@ -73,12 +73,12 @@
   // 设置页面：/settings 是个人设置，/admin/settings 是管理设置；其它地址只放入口按钮。
   const cleanPath = location.pathname.replace(/\/+$/, '');
   const pageMode = cleanPath === '/settings' ? 'member' : cleanPath === '/admin/settings' ? 'admin' : cleanPath === '/market' ? 'market' : cleanPath === '/workspaces' ? 'workspaces' : null;
-  const MEMBER_TABS = [['usage', '用量'], ['dashboard', '仪表盘'], ['market', '市场'], ['tokens', 'API 令牌'], ['agents', '智能体'], ['workspaces', '工作区'], ['skills', '技能工坊'], ['bots', '机器人'], ['wallpapers', '壁纸'], ['cindy', 'Cindy 账号'], ['security', '账号安全'], ['audit', '操作记录']];
-  const ADMIN_TABS = [['members', '团队成员'], ['invites', '邀请成员'], ['userskills', '用户技能'], ['providers', 'AI 接入'], ['engines', '智能体引擎'], ['mcp', 'MCP 服务'], ['voice', '语音识别'], ['tts', '语音朗读'], ['vision', '图片理解'], ['imagegen', '绘画模型'], ['security', '账号安全'], ['site', '站点设置'], ['service', '服务更新'], ['review', '市场审核'], ['desktop', '桌面端'], ['dashboard', '团队仪表盘'], ['audit', '审计与统计'], ['env', '环境检测'], ['doctor', '服务器体检'], ['usage', '团队用量']];
+  const MEMBER_TABS = [['usage', '用量'], ['dashboard', '仪表盘'], ['market', '市场'], ['tokens', 'API 令牌'], ['agents', '智能体'], ['workspaces', '工作区'], ['skills', '技能工坊'], ['bots', '机器人'], ['wallpapers', '壁纸'], ['mail', 'AI 邮箱'], ['cindy', 'Cindy 账号'], ['security', '账号安全'], ['audit', '操作记录']];
+  const ADMIN_TABS = [['members', '团队成员'], ['invites', '邀请成员'], ['userskills', '用户技能'], ['providers', 'AI 接入'], ['engines', '智能体引擎'], ['safety', '安全与熔断'], ['plan', '套餐与授权'], ['mcp', 'MCP 服务'], ['voice', '语音识别'], ['tts', '语音朗读'], ['vision', '图片理解'], ['imagegen', '绘画模型'], ['security', '账号安全'], ['site', '站点设置'], ['service', '服务更新'], ['review', '市场审核'], ['desktop', '桌面端'], ['dashboard', '团队仪表盘'], ['audit', '审计与统计'], ['env', '环境检测'], ['doctor', '服务器体检'], ['usage', '团队用量']];
   const PERSONAL_HIDDEN = ['members', 'invites', 'userskills', 'review']; // 个人使用模式下隐藏的团队功能
   const tabsFor = list => (me && me.mode === 'personal') ? list.filter(t => !PERSONAL_HIDDEN.includes(t[0])) : list;
   const MEMBER_GROUPS = [['概览', ['usage', 'dashboard', 'audit']], ['开发与集成', ['tokens', 'agents', 'skills', 'bots']], ['个性化', ['wallpapers']], ['账号', ['cindy', 'security']]];
-  const ADMIN_GROUPS = [['成员', ['members', 'invites', 'userskills']], ['模型与引擎', ['providers', 'engines', 'mcp', 'voice', 'tts', 'vision', 'imagegen', 'desktop']], ['站点', ['security', 'site', 'service', 'review']], ['统计', ['dashboard', 'usage', 'audit', 'env', 'doctor']]];
+  const ADMIN_GROUPS = [['成员', ['members', 'invites', 'userskills']], ['模型与引擎', ['providers', 'engines', 'safety', 'plan', 'mcp', 'voice', 'tts', 'vision', 'imagegen', 'desktop']], ['站点', ['security', 'site', 'service', 'review']], ['统计', ['dashboard', 'usage', 'audit', 'env', 'doctor']]];
   const TAB_META = {
     market: ['◇', '技能与机器人市场', '挑选现成的技能和机器人模板，一键安装成你自己的；也可以把自己做的投稿给大家用。'],
     review: ['✔', '市场审核', '审核成员投稿的技能和机器人模板，决定是否上架；可以随时下架。'],
@@ -99,6 +99,9 @@
     imagegen: ['✎', '绘画模型', '接入文生图模型（OpenAI 兼容 /images/generations），成员在聊天页点 🎨 即可用文字生成图片。'],
     voice: ['♪', '语音识别', '让成员在聊天框里点麦克风说话，自动转成文字；可指定普通话、粤语、四川话等方言。复用“AI 接入”里的服务商。'],
     mcp: ['⛓', 'MCP 服务', '给 Claude Code / Codex / Pi 接入 MCP 工具（网页抓取、数据库、搜索等）。命令在运行器容器里执行，只有管理员能配置。'],
+    mail: ['✉', 'AI 邮箱', '绑定你自己的公司邮箱，让 AI 帮你读信、起草回复。AI 只写草稿，发出去必须你本人点“确认发送”。'],
+    plan: ['★', '套餐与授权', '查看当前版本档位、每个功能属于哪一档，输入授权密钥。试用期所有功能都可用，不加锁。'],
+    safety: ['⛨', '安全与熔断', '敏感内容拦截、机密工作区、模型熔断和费用上限；命中时拦截并告警。只记录谁、什么时候、命中什么规则，不记录内容。'],
     engines: ['⌘', '智能体引擎', '配置 Claude Code / Codex / Pi 的密钥、默认模型和允许成员选择的模型。'],
     desktop: ['▭', '桌面端', '在浏览器里打开服务器上的 Cindy 桌面端，用来登录官方账号并向团队提供 Cindy 模型。'],
     dashboard: ['▦', '仪表盘', '把模型调用、Token、文件操作、删除记录做成图表：趋势、占比、排行和时段分布，可导出 CSV / PNG / SVG / JSON，支持深色主题。'],
@@ -406,7 +409,7 @@
         : el('div', { class: 'modal-head' }, el('h2', { textContent: '团队与 API' }), el('button', { type: 'button', class: 'secondary', textContent: '关闭', on: { click: () => { backdrop.hidden = true; } } })),
       el('div', { class: 'team-tabs' }, tabs.map(([id, label]) => el('button', { type: 'button', class: id === tab ? 'on' : '', textContent: label, on: { click: () => { tab = id; if (pageMode) history.replaceState(null, '', location.pathname + '?tab=' + id); render(); } } }))),
       body);
-    try { await ({ site: renderSite, service: renderService, invites: renderInvites, userskills: renderUserSkills, market: renderMarket, review: renderReview, desktop: renderDesktop, skills: renderSkills, bots: renderBots, wallpapers: renderWallpapers, workspaces: renderWorkspaces, engines: renderEngines, mcp: renderMcp, cindy: renderCindy, usage: renderUsage, dashboard: renderDashboard, audit: renderAudit, env: renderEnv, doctor: renderDoctor, tokens: renderTokens, agents: renderAgents, providers: renderProviders, voice: renderVoice, imagegen: renderImageGen, tts: renderTts, vision: renderVision, security: renderSecurity, members: renderMembers })[tab](body); }
+    try { await ({ site: renderSite, service: renderService, invites: renderInvites, userskills: renderUserSkills, market: renderMarket, review: renderReview, desktop: renderDesktop, skills: renderSkills, bots: renderBots, wallpapers: renderWallpapers, workspaces: renderWorkspaces, engines: renderEngines, safety: renderSafety, plan: renderPlan, mail: renderMail, mcp: renderMcp, cindy: renderCindy, usage: renderUsage, dashboard: renderDashboard, audit: renderAudit, env: renderEnv, doctor: renderDoctor, tokens: renderTokens, agents: renderAgents, providers: renderProviders, voice: renderVoice, imagegen: renderImageGen, tts: renderTts, vision: renderVision, security: renderSecurity, members: renderMembers })[tab](body); }
     catch (e) { body.append(el('div', { class: 'team-err', textContent: e.message })); }
   }
   const modelLabelOf = ref => { const m = (window.yumeiroCatalog || []).find(x => x.ref === ref); return m ? modelName(m) : ref; };
@@ -783,14 +786,15 @@
     const v = await ymForm('工作区设置', [
       { name: 'name', label: '名称', value: w.name, required: true },
       { name: 'visibility', label: '谁可以访问', type: 'select', value: w.visibility || (w.members?.length ? 'members' : 'private'), options: wsVisOptions() },
-      await wsMemberField({ members: w.members || [] }, '成员')], { okText: '保存', extra: { text: '删除工作区' } });
+      await wsMemberField({ members: w.members || [] }, '成员'),
+      ...(me && me.role === 'admin' ? [{ name: 'label', label: '机密标签（仅主账号可改）', type: 'select', value: w.label === 'confidential' ? 'confidential' : 'normal', options: [{ value: 'normal', label: '普通' }, { value: 'confidential', label: '机密：内容不能发给未被允许的模型' }], hint: '在“安全与熔断”页决定哪些模型可以处理机密工作区' }] : [])], { okText: '保存', extra: { text: '删除工作区' } });
     if (!v) return;
     if (v.__extra) {
       if (!await ymConfirm('删除工作区“' + w.name + '”？目录里的文件和协作记录都会被删除。', { danger: true, okText: '删除' })) return;
       try { await api('/api/workspaces/' + w.id, { method: 'DELETE' }); after(); } catch (e) { ymAlert(e.message); }
       return;
     }
-    try { await api('/api/workspaces/' + w.id, { method: 'PATCH', body: JSON.stringify({ name: v.name, visibility: v.visibility, members: wsPicked(v) }) }); after(); }
+    try { await api('/api/workspaces/' + w.id, { method: 'PATCH', body: JSON.stringify({ name: v.name, visibility: v.visibility, members: wsPicked(v), ...(v.label !== undefined ? { label: v.label } : {}) }) }); after(); }
     catch (e) { await ymAlert(e.message); wsSettingsDialog({ ...w, name: v.name, visibility: v.visibility, members: wsPicked(v) }, after); }
   }
   // 在首页上层打开工作区（文件 / 多智能体协作 / 共享与成员），关闭后回到原来的对话
@@ -1298,9 +1302,211 @@
         el('button', { type: 'button', class: 'primary', textContent: '保存', on: { click: async () => { try { await api('/api/admin/sandbox', { method: 'PUT', body: JSON.stringify({ enabled: enabled.checked, membersAllowed: members.checked, timeoutSec: Number(timeout.value) }) }); err.textContent = '已保存'; } catch (x) { err.textContent = x.message; } } } }), err));
   }
 
+  // ---------- 安全与熔断（管理员） ----------
+  // 敏感内容拦截（关键词 + 工作区“机密”标签）、熔断与费用上限、实时状态和事件。事件只记录“谁、什么时候、命中什么规则”，不记录内容。
+  async function renderSafety(body) {
+    const data = await api('/api/admin/security'), err = errBox(), ok = el('div', { class: 'team-note' });
+    const KIND = { dlp: '敏感内容', confidential: '机密工作区', breaker: '模型熔断', abuse: '请求过快', cost: '费用上限' };
+    const dlp = data.dlp, br = data.breaker;
+    const on = el('input', { type: 'checkbox', checked: dlp.enabled }), mode = el('select', {}, el('option', { value: 'block', textContent: '拦截（不发给模型，并告警）' }), el('option', { value: 'warn', textContent: '只警告（放行，但记录并告警）' }));
+    mode.value = dlp.mode;
+    const builtin = {}, builtinBox = el('div', { style: 'display:flex;gap:14px;flex-wrap:wrap' });
+    for (const [id, label] of [['idcard', '身份证号（带校验）'], ['bank', '银行卡号（带校验）'], ['secret', '密钥 / 令牌'], ['phone', '手机号'], ['email', '邮箱地址']]) { builtin[id] = el('input', { type: 'checkbox', checked: Boolean(dlp.builtin[id]) }); builtinBox.append(el('label', { style: 'font-size:13px' }, builtin[id], ' ' + label)); }
+    const keywords = el('textarea', { placeholder: '自定义关键词，每行一个，不分大小写。例如：项目极光、合同编号', style: 'min-height:90px' }); keywords.value = (dlp.keywords || []).join('\n');
+    const regexes = el('textarea', { placeholder: '自定义正则，每行一条，格式：名称 = 正则。例如：合同号 = HT-[0-9]{6}', style: 'min-height:70px' }); regexes.value = (dlp.regexes || []).map(r => r.name + ' = ' + r.pattern).join('\n');
+    const allowBox = el('div', { style: 'display:grid;gap:4px' }), allow = {};
+    for (const item of [...data.providers, ...data.engines]) { allow[item.id] = el('input', { type: 'checkbox', checked: (dlp.confidentialAllow || []).includes(item.id) }); allowBox.append(el('label', { style: 'font-size:13px' }, allow[item.id], ' ' + item.name)); }
+    const emailOn = el('input', { type: 'checkbox', checked: Boolean(data.emailDomains?.enabled) }), emailList = el('textarea', { placeholder: '公司邮箱域名，每行一个，例如：example.com', style: 'min-height:70px' }); emailList.value = (data.emailDomains?.domains || []).join('\n');
+    const num = (value, ph, min = 0) => el('input', { type: 'number', min, value: value ?? '', placeholder: ph, style: 'width:110px' });
+    const f = { thr: num(br.failureThreshold, '5', 1), open: num(br.openSeconds, '60', 5), rate: num(br.userRatePerMinute, '30'), day: num(br.dailyCostLimit, '0'), month: num(br.monthlyCostLimit, '0') };
+    const breakerOn = el('input', { type: 'checkbox', checked: br.enabled });
+    const save = el('button', { type: 'button', class: 'primary', textContent: '保存', on: { click: async () => {
+      err.textContent = ''; ok.textContent = '';
+      try {
+        const rx = regexes.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const i = l.indexOf('='); return i > 0 ? { name: l.slice(0, i).trim(), pattern: l.slice(i + 1).trim() } : { name: '自定义规则', pattern: l }; });
+        await api('/api/admin/security', { method: 'PUT', body: JSON.stringify({
+          dlp: { enabled: on.checked, mode: mode.value, builtin: Object.fromEntries(Object.entries(builtin).map(([k, box]) => [k, box.checked])), keywords: keywords.value.split('\n'), regexes: rx, confidentialAllow: Object.entries(allow).filter(([, box]) => box.checked).map(([k]) => k) },
+          emailDomains: { enabled: emailOn.checked, domains: emailList.value },
+          breaker: { enabled: breakerOn.checked, failureThreshold: f.thr.value, openSeconds: f.open.value, userRatePerMinute: f.rate.value, dailyCostLimit: f.day.value, monthlyCostLimit: f.month.value } }) });
+        ok.textContent = '已保存，立即生效。';
+      } catch (e) { err.textContent = e.message; }
+    } } });
+    const act = async payload => { try { await api('/api/admin/security/breaker', { method: 'POST', body: JSON.stringify(payload) }); body.replaceChildren(); await renderSafety(body); } catch (e) { err.textContent = e.message; } };
+    const states = data.states.models.length ? data.states.models.map(s => el('div', { class: 'team-row', style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+      el('span', { style: 'font-weight:650;color:' + (s.state === 'open' ? '#d33a4a' : s.state === 'half' ? '#d98a00' : 'var(--ok,#2f9e5b)'), textContent: s.state === 'open' ? (s.manual ? '已手动暂停' : '已熔断') : s.state === 'half' ? '试探中' : '正常' }),
+      el('span', { style: 'overflow-wrap:anywhere;flex:1', textContent: s.key + (s.reason ? '　' + s.reason : '') + (s.retryAfterMs ? `　约 ${Math.ceil(s.retryAfterMs / 1000)} 秒后试探` : '') }),
+      s.state !== 'closed' ? el('button', { type: 'button', class: 'secondary', textContent: '立即恢复', on: { click: () => act({ action: 'reset', key: s.key }) } }) : el('button', { type: 'button', class: 'secondary', textContent: '手动暂停', on: { click: () => act({ action: 'trip', key: s.key }) } })))
+      : [el('p', { class: 'team-note', textContent: '还没有模型被调用过，这里会显示每个模型的熔断状态。' })];
+    const users = data.states.users.map(u => el('div', { class: 'team-row', style: 'display:flex;gap:8px;align-items:center' }, el('span', { style: 'flex:1', textContent: `${u.email || u.userId}　请求太快，暂停中（约 ${Math.ceil(u.retryAfterMs / 1000)} 秒）` }), el('button', { type: 'button', class: 'secondary', textContent: '立即恢复', on: { click: () => act({ action: 'reset-user', userId: u.userId }) } })));
+    const events = data.events.length ? data.events.slice(0, 50).map(e => el('div', { style: 'padding:6px 0;border-bottom:1px dashed var(--line,#e7e8ec);font-size:13px' },
+      el('b', { style: 'color:' + (e.blocked === false ? '#d98a00' : '#d33a4a'), textContent: `[${KIND[e.kind] || e.kind}] ` }), el('span', { textContent: e.summary || '' }),
+      el('div', { class: 'team-note', textContent: fmt(e.at) + (e.email ? '　' + e.email : '') + (e.model ? '　' + e.model : '') }))) : [el('p', { class: 'team-note', textContent: '暂时没有告警。' })];
+    body.append(
+      el('div', { class: 'team-note', textContent: '这里只记录“谁、什么时候、命中了什么规则”，不会记录或显示被检测的内容本身。' }),
+      el('div', { class: 'team-card' }, el('h4', { textContent: '注册邮箱限制' }),
+        el('p', { class: 'team-note', textContent: '开启后，邀请、新建成员都只接受下面这些域名的邮箱（完整匹配，子域名要单独写）。已有成员不受影响。' }),
+        el('label', {}, emailOn, ' 只允许公司邮箱注册'), emailList),
+      el('div', { class: 'team-card' }, el('h4', { textContent: '敏感内容拦截' }),
+        el('p', { class: 'team-note', textContent: '成员发给模型的内容、以及引擎的指令，会在发出前检查。命中后按下面的方式处理，并记入页面底部的告警。只检查“这一轮新发出的内容”。' }),
+        el('label', {}, on, ' 启用'), el('label', { style: 'display:block;margin:6px 0' }, '命中后　', mode), builtinBox, keywords, regexes),
+      el('div', { class: 'team-card' }, el('h4', { textContent: '机密工作区' }),
+        el('p', { class: 'team-note', textContent: `管理员在“工作区设置”里把工作区标成“机密”后，它的内容默认不能发给任何模型或引擎。只有勾选下面的才允许（比如公司自己部署的模型）。当前机密工作区：${data.labeled.length ? data.labeled.map(w => w.name).join('、') : '无'}。` }), allowBox),
+      el('div', { class: 'team-card' }, el('h4', { textContent: '熔断与费用上限' }),
+        el('label', {}, breakerOn, ' 启用熔断'),
+        el('div', { class: 'team-form' }, el('label', {}, '模型连续失败 ', f.thr, ' 次就熔断'), el('label', {}, '熔断后先断开 ', f.open, ' 秒再试探'), el('label', {}, '单人每分钟最多 ', f.rate, ' 次（0 不限）'),
+          el('label', {}, `每日费用上限 ${data.currency} `, f.day, '（0 不限）'), el('label', {}, `每月费用上限 ${data.currency} `, f.month, '（0 不限）')),
+        el('p', { class: 'team-note', textContent: `当前已用：今日 ${data.currency}${data.costs.day.toFixed(2)}，本月 ${data.currency}${data.costs.month.toFixed(2)}。费用按“用量与价格”里设置的单价计算。失败指限流（429）、服务端错误（5xx）、密钥被拒（401/403）、超时和连不上。` })),
+      el('div', {}, save), ok, err,
+      el('h4', { style: 'margin:16px 0 4px', textContent: '实时状态' }), ...states, ...users,
+      el('h4', { style: 'margin:16px 0 4px', textContent: '告警记录（最近 50 条）' }), ...events);
+  }
+
+  // AI 邮箱：绑定自己的邮箱 → 看收件箱 → 让 AI 起草 → 自己改 → 自己点确认发送
+  async function renderMail(body) {
+    const d = await api('/api/mail'), err = errBox(), ok = el('div', { class: 'team-note' });
+    const reload = async () => { body.replaceChildren(); await renderMail(body); };
+    const guard = fn => async (...a) => { err.textContent = ''; ok.textContent = ''; try { await fn(...a); } catch (e) { err.textContent = e.message; } };
+    const PRESETS = [['', '手动填写'], ['exmail', '腾讯企业邮箱 / 企业微信邮箱'], ['qq', 'QQ 邮箱'], ['163', '网易 163 邮箱'], ['gmail', 'Gmail / Google Workspace'], ['o365', 'Microsoft 365 / Outlook']];
+    const HOSTS = { exmail: ['imap.exmail.qq.com', 'smtp.exmail.qq.com', 993, 465], qq: ['imap.qq.com', 'smtp.qq.com', 993, 465], 163: ['imap.163.com', 'smtp.163.com', 993, 465], gmail: ['imap.gmail.com', 'smtp.gmail.com', 993, 465], o365: ['outlook.office365.com', 'smtp.office365.com', 993, 587] };
+    const inp = (ph, value = '', type = 'text') => el('input', { type, placeholder: ph, value, autocomplete: 'off', style: 'width:100%' });
+    const parts = [];
+    if (d.account) {
+      parts.push(el('div', { class: 'team-card' }, el('h4', { textContent: '已绑定：' + d.account.email }),
+        el('p', { class: 'team-note', textContent: `收信 ${d.account.imapHost}:${d.account.imapPort}　发信 ${d.account.smtpHost}:${d.account.smtpPort}　今天已发 ${d.sendsToday}/${d.sendLimit} 封。密码保存在服务器加密存储里，页面不会再显示。` }),
+        el('button', { type: 'button', class: 'secondary danger', textContent: '解除绑定', on: { click: guard(async () => { if (!await ymConfirm('解除后会删除服务器上保存的邮箱密码和所有草稿，继续？', { danger: true, okText: '解除' })) return; await api('/api/mail/account', { method: 'DELETE' }); await reload(); }) } })));
+      // 收件箱
+      const list = el('div', {}), detail = el('div', {});
+      const instruction = el('textarea', { placeholder: '想让 AI 怎么回？例如：礼貌地答应，约周三下午；或留空让 AI 自己写一个得体的回复', style: 'min-height:70px;width:100%' });
+      let openUid = 0;
+      const openMessage = guard(async uid => {
+        detail.replaceChildren(el('p', { class: 'team-note', textContent: '正在读取…' }));
+        const m = (await api('/api/mail/message/' + uid)).message; openUid = uid;
+        detail.replaceChildren(el('div', { class: 'team-card' }, el('h4', { style: 'overflow-wrap:anywhere', textContent: m.subject }),
+          el('p', { class: 'team-note', textContent: `发件人 ${m.from}　${fmt(m.date)}${m.attachments.length ? '　附件：' + m.attachments.join('、') + '（不会交给 AI）' : ''}` }),
+          el('pre', { style: 'white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font:inherit;font-size:13px', textContent: m.text || '（没有正文）' }),
+          instruction,
+          el('div', { style: 'margin-top:8px' }, el('button', { type: 'button', class: 'primary', textContent: 'AI 起草回复', on: { click: guard(async () => { ok.textContent = 'AI 正在起草…'; await api('/api/mail/draft', { method: 'POST', body: JSON.stringify({ uid: openUid, instruction: instruction.value }) }); await reload(); }) } })),
+          el('p', { class: 'team-note', textContent: '邮件内容会发给你选用的 AI 模型；如果管理员开启了敏感内容拦截，含身份证号、银行卡号、密钥的邮件会被拦下。' })));
+      });
+      const loadInbox = guard(async () => {
+        list.replaceChildren(el('p', { class: 'team-note', textContent: '正在读取收件箱…' }));
+        const rows = (await api('/api/mail/inbox')).messages;
+        list.replaceChildren(...(rows.length ? rows.map(m => el('div', { class: 'team-row', role: 'button', tabindex: '0', style: 'cursor:pointer;padding:8px 0;border-bottom:1px dashed var(--line,#e7e8ec)', on: { click: () => openMessage(m.uid), keydown: e => { if (e.key === 'Enter') openMessage(m.uid); } } },
+          el('div', { style: 'font-weight:' + (m.seen ? 400 : 700) + ';overflow-wrap:anywhere', textContent: m.subject }), el('div', { class: 'team-note', textContent: m.from + '　' + fmt(m.date) }))) : [el('p', { class: 'team-note', textContent: '收件箱是空的。' })]));
+      });
+      parts.push(el('div', { class: 'team-card' }, el('h4', { textContent: '收件箱' }), el('button', { type: 'button', class: 'secondary', textContent: '读取最近 20 封', on: { click: loadInbox } }), list), detail);
+      // 写新邮件
+      const nTo = inp('收件人（多个用逗号分隔）'), nSubject = inp('主题'), nAsk = el('textarea', { placeholder: '想写什么？例如：给张经理发一封会议改期的通知，改到周五上午 10 点', style: 'min-height:70px;width:100%' });
+      parts.push(el('div', { class: 'team-card' }, el('h4', { textContent: '写新邮件' }), nTo, nSubject, nAsk,
+        el('div', { style: 'margin-top:8px' }, el('button', { type: 'button', class: 'primary', textContent: 'AI 起草', on: { click: guard(async () => { ok.textContent = 'AI 正在起草…'; const r = await api('/api/mail/draft', { method: 'POST', body: JSON.stringify({ instruction: nAsk.value, subject: nSubject.value }) }); if (nTo.value.trim()) await api('/api/mail/draft/' + r.draft.id, { method: 'PUT', body: JSON.stringify({ to: nTo.value }) }); await reload(); }) } }))));
+      // 草稿
+      const drafts = d.drafts.map(dr => {
+        const sent = dr.status === 'sent';
+        const to = inp('收件人', (dr.to || []).join(', ')), cc = inp('抄送（可选）', (dr.cc || []).join(', ')), subject = inp('主题', dr.subject || ''), text = el('textarea', { style: 'min-height:160px;width:100%' }); text.value = dr.body || '';
+        for (const x of [to, cc, subject, text]) x.disabled = sent;
+        const save = async () => { await api('/api/mail/draft/' + dr.id, { method: 'PUT', body: JSON.stringify({ to: to.value, cc: cc.value, subject: subject.value, body: text.value }) }); };
+        return el('div', { class: 'team-card' }, el('h4', { textContent: (sent ? '已发送：' : '草稿：') + (dr.subject || '（无主题）') }),
+          dr.source ? el('p', { class: 'team-note', textContent: `回复 ${dr.source.from} 的「${dr.source.subject}」` }) : null, to, cc, subject, text,
+          sent ? el('p', { class: 'team-note', textContent: '已于 ' + fmt(dr.sentAt) + ' 发出。' }) : el('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px' },
+            el('button', { type: 'button', class: 'secondary', textContent: '保存修改', on: { click: guard(async () => { await save(); ok.textContent = '已保存。'; }) } }),
+            el('button', { type: 'button', class: 'primary', textContent: '确认发送', on: { click: guard(async () => { await save(); if (!await ymConfirm(`确认以 ${d.account.email} 的名义发送给：\n${to.value}${cc.value ? '\n抄送：' + cc.value : ''}\n\n主题：${subject.value}\n\n发出后无法撤回。`, { okText: '确认发送' })) return; await api('/api/mail/draft/' + dr.id + '/send', { method: 'POST', body: JSON.stringify({ confirm: true }) }); await reload(); }) } }),
+            el('button', { type: 'button', class: 'secondary danger', textContent: '删除', on: { click: guard(async () => { await api('/api/mail/draft/' + dr.id, { method: 'DELETE' }); await reload(); }) } })));
+      });
+      parts.push(el('h4', { style: 'margin:16px 0 4px', textContent: '草稿与已发送' }), ...(drafts.length ? drafts : [el('p', { class: 'team-note', textContent: '还没有草稿。' })]));
+    } else {
+      const preset = el('select', {}, ...PRESETS.map(([v, t]) => el('option', { value: v, textContent: t })));
+      const email = inp('你的公司邮箱，例如 name@example.com'), user = inp('登录用户名（一般就是邮箱，可留空）'), pass = inp('密码或授权码', '', 'password');
+      const ih = inp('收信服务器（IMAP）'), ip = inp('端口', '993', 'number'), sh = inp('发信服务器（SMTP）'), sp = inp('端口', '465', 'number');
+      preset.addEventListener('change', () => { const h = HOSTS[preset.value]; if (h) { ih.value = h[0]; sh.value = h[1]; ip.value = h[2]; sp.value = h[3]; } });
+      parts.push(el('div', { class: 'team-card' }, el('h4', { textContent: '绑定邮箱' }),
+        el('p', { class: 'team-note', textContent: (d.domains.length ? '只能绑定公司域名的邮箱：' + d.domains.map(x => '@' + x).join('、') + '。' : '') + '建议使用邮箱服务商提供的“授权码 / 应用专用密码”，不要用登录主密码。保存时会先试连一次，成功才保存。' }),
+        el('div', { class: 'team-form' }, el('label', {}, '常用服务商', preset), el('label', {}, '邮箱', email), el('label', {}, '用户名', user), el('label', {}, '密码 / 授权码', pass),
+          el('label', {}, '收信服务器', ih), el('label', {}, '收信端口', ip), el('label', {}, '发信服务器', sh), el('label', {}, '发信端口', sp)),
+        el('button', { type: 'button', class: 'primary', textContent: '测试并保存', on: { click: guard(async () => { ok.textContent = '正在连接邮件服务器…'; await api('/api/mail/account', { method: 'PUT', body: JSON.stringify({ email: email.value, username: user.value, pass: pass.value, imapHost: ih.value, imapPort: ip.value, smtpHost: sh.value, smtpPort: sp.value }) }); await reload(); }) } })));
+    }
+    if (me.role === 'admin') {
+      const priv = el('input', { type: 'checkbox', checked: Boolean(d.allowPrivate) });
+      parts.push(el('div', { class: 'team-card' }, el('h4', { textContent: '管理员设置' }),
+        el('label', {}, priv, ' 允许连接内网邮件服务器（默认只允许公网地址，防止被用来探测内网）'),
+        el('div', { style: 'margin-top:8px' }, el('button', { type: 'button', class: 'secondary', textContent: '保存', on: { click: guard(async () => { await api('/api/admin/mail', { method: 'PUT', body: JSON.stringify({ allowPrivate: priv.checked }) }); ok.textContent = '已保存。'; }) } }))));
+    }
+    body.append(el('div', { class: 'team-note', textContent: 'AI 只能读你选中的那一封邮件和写草稿；它不能自己发信，也看不到收件箱里的其他邮件。' }), ...parts, ok, err);
+  }
+
+  // 套餐与授权：试用期不加锁，只展示分级；以后发版打开加锁后，需要在线购买或输入授权密钥
+  async function renderPlan(body, picked) {
+    const d = await api('/api/admin/plan'), err = errBox(), ok = el('div', { class: 'team-note' });
+    const rank = id => d.tiers.findIndex(t => t.id === id), tierName = id => (d.tiers.find(t => t.id === id) || {}).name || id;
+    picked = picked || d.tier;
+    const reload = async (p) => { body.replaceChildren(); await renderPlan(body, p); };
+    const key = el('input', { type: 'text', placeholder: '粘贴授权密钥（YML1.…）', autocomplete: 'off', style: 'width:100%' });
+    const activate = el('button', { type: 'button', class: 'primary', textContent: '激活', on: { click: async () => { err.textContent = ''; if (!key.value.trim()) { err.textContent = '请先粘贴授权密钥'; return; } try { await api('/api/admin/plan/license', { method: 'POST', body: JSON.stringify({ key: key.value }) }); await reload(); } catch (e) { err.textContent = e.message; } } } });
+    const remove = d.license ? el('button', { type: 'button', class: 'secondary', textContent: '移除授权', on: { click: async () => { try { await api('/api/admin/plan/license', { method: 'DELETE' }); await reload(); } catch (e) { err.textContent = e.message; } } } }) : null;
+    const status = d.license
+      ? `当前授权：${tierName(d.license.tier)}${d.license.org ? '　' + d.license.org : ''}　${d.license.exp ? '到期 ' + new Date(d.license.exp).toLocaleDateString() : '长期有效'}`
+      : '当前没有授权密钥，按免费版计算。' + (d.licenseError ? '（' + d.licenseError + '）' : '');
+    // 在线购买：跳转到发行方配置的 https 购买页，并带上想买的档位；真正的收款在那个页面完成
+    const buyHref = tier => { try { const u = new URL(d.purchaseUrl); u.searchParams.set('tier', tier); u.searchParams.set('members', String(d.members)); return u.toString(); } catch { return ''; } };
+    const buyButton = t => rank(t.id) > rank(d.tier) ? (d.purchaseUrl
+      ? el('a', { href: buyHref(t.id), target: '_blank', rel: 'noopener noreferrer', class: 'primary', style: 'display:inline-block;padding:8px 14px;border-radius:10px;text-decoration:none;text-align:center', textContent: '在线购买 ' + t.name })
+      : el('button', { type: 'button', class: 'secondary', disabled: true, title: '管理员还没有设置购买地址', textContent: '在线购买（未开通）' })) : null;
+    const cards = d.tiers.map(t => el('div', { class: 'team-card', role: 'button', tabindex: '0', 'aria-pressed': String(t.id === picked), style: 'cursor:pointer;display:flex;flex-direction:column;gap:6px;' + (t.id === picked ? 'outline:2px solid var(--accent,#e95164)' : ''), on: { click: () => reload(t.id), keydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reload(t.id); } } } },
+      el('h4', { style: 'margin:0', textContent: t.name + (t.id === d.tier ? '（当前）' : '') }),
+      el('p', { class: 'team-note', style: 'margin:0', textContent: t.blurb }),
+      el('p', { class: 'team-note', style: 'margin:0', textContent: `成员 ${t.seats || '不限'}　独立桌面 ${t.desktops || '无'}` }),
+      buyButton(t)));
+    const pickedTier = d.tiers.find(t => t.id === picked), included = d.features.filter(f => rank(f.tier) <= rank(picked));
+    const detail = el('div', { class: 'team-card' }, el('h4', { textContent: pickedTier.name + ' 包含的功能' }),
+      ...d.features.map(f => { const has = rank(f.tier) <= rank(picked); return el('div', { style: 'font-size:14px;padding:3px 0;opacity:' + (has ? 1 : 0.5), textContent: (has ? '✓ ' : '– ') + f.name + (f.tier !== 'free' ? `（${tierName(f.tier)}起）` : '') + (f.status === 'planned' ? '　规划中' : '') }); }),
+      el('p', { class: 'team-note', textContent: `共 ${included.length} 项功能。` }));
+    const url = el('input', { type: 'url', placeholder: 'https://… 发行方的购买页面', value: d.purchaseUrl || '', style: 'width:100%' });
+    const saveUrl = el('button', { type: 'button', class: 'secondary', textContent: '保存购买地址', on: { click: async () => { err.textContent = ''; try { await api('/api/admin/plan/purchase', { method: 'PUT', body: JSON.stringify({ url: url.value }) }); ok.textContent = '已保存。'; await reload(picked); } catch (e) { err.textContent = e.message; } } } });
+    body.append(
+      el('div', { class: 'team-note', style: 'font-weight:650', textContent: d.enforced ? '当前已启用功能分级。' : '试用期：所有功能都可以使用，下面只标明将来属于哪一档。点一下卡片可以查看这一档包含的功能。' }),
+      el('div', { class: 'team-card' }, el('h4', { textContent: '授权' }), el('p', { class: 'team-note', textContent: status + `　成员 ${d.members} 人` }),
+        key, el('div', { style: 'margin-top:8px;display:flex;gap:8px;flex-wrap:wrap' }, activate, remove), ok, err),
+      el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:12px 0' }, ...cards),
+      detail,
+      el('div', { class: 'team-card' }, el('h4', { textContent: '在线购买设置' }),
+        el('p', { class: 'team-note', textContent: '填写你的收款页面（支付宝 / 微信 / Stripe 等的商品页都行）。成员点“在线购买”会打开这个地址，并带上 tier（档位）和 members（成员数）；付款后用授权密钥激活。本程序不经手任何付款信息。' }),
+        url, el('div', { style: 'margin-top:8px' }, saveUrl)));
+  }
+
+  // 引擎与隔离自检：不需要密钥、不调用模型。看引擎装没装好，以及运行器有没有守住隔离（不是 root、读不到主服务的密钥和数据、环境变量最小、工作区出不去）
+  function selfCheckCard() {
+    const out = el('div', {}), err = errBox(), btn = el('button', { type: 'button', class: 'primary', textContent: '运行自检' });
+    const ICON = { ok: ['✓', 'var(--ok,#2f9e5b)'], warn: ['!', '#d98a00'], fail: ['✗', '#d33a4a'], info: ['i', 'var(--muted,#777b86)'], skip: ['–', 'var(--muted,#777b86)'] };
+    const GROUPS = [['engine', 'A　引擎'], ['isolation', 'B　隔离']];
+    const draw = data => {
+      if (data.enabled === false) { out.replaceChildren(el('p', { class: 'team-note', textContent: data.message })); return; }
+      const s = data.summary || {};
+      const head = el('p', { style: 'font-weight:650;margin:10px 0 4px;color:' + (s.fail ? '#d33a4a' : s.warn ? '#d98a00' : 'var(--ok,#2f9e5b)'), textContent: (s.fail ? `有 ${s.fail} 项没通过` : s.warn ? '没有失败，但有需要留意的项' : '全部通过') + `（通过 ${s.ok || 0}，警告 ${s.warn || 0}，失败 ${s.fail || 0}）　${fmt(data.at)}` });
+      out.replaceChildren(head, ...GROUPS.flatMap(([key, title]) => {
+        const rows = (data.checks || []).filter(c => c.group === key);
+        return rows.length ? [el('h5', { style: 'margin:12px 0 4px', textContent: title }), ...rows.map(c => {
+          const [mark, color] = ICON[c.status] || ICON.info;
+          return el('div', { style: 'display:grid;grid-template-columns:1.6em 1fr;gap:6px;padding:5px 0;border-bottom:1px dashed var(--line,#e7e8ec)' },
+            el('span', { style: 'font-weight:700;color:' + color, textContent: mark }),
+            el('div', {}, el('div', { style: 'font-weight:600', textContent: c.title }),
+              c.detail ? el('div', { class: 'team-note', style: 'overflow-wrap:anywhere', textContent: c.detail }) : null,
+              c.fix && (c.status === 'fail' || c.status === 'warn') ? el('div', { style: 'font-size:13px;color:' + color, textContent: '怎么办：' + c.fix }) : null));
+        })] : [];
+      }));
+    };
+    btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.textContent = '检查中…'; err.textContent = '';
+      try { draw(await api('/api/admin/engines/selfcheck')); } catch (e) { err.textContent = e.message; }
+      btn.disabled = false; btn.textContent = '重新检查';
+    });
+    return el('div', { class: 'team-card' },
+      el('h4', { textContent: '引擎与隔离自检' }),
+      el('p', { class: 'team-note', textContent: '一键检查：Claude Code、Codex、Pi 有没有装好；运行器有没有守住隔离——不是 root、读不到主服务的数据和密钥、传给引擎的环境变量最小、工作区的目录出不去、没有多余的系统权限。只读检查，不调用模型，不需要密钥。' }),
+      btn, err, out);
+  }
+
   async function renderEngines(body) {
     const data = await api('/api/admin/engines'), err = errBox();
-    body.append(await sandboxCard().catch(() => el('span')),
+    body.append(selfCheckCard(), await sandboxCard().catch(() => el('span')),
       el('p', { class: 'team-note', textContent: 'Claude Code、Codex、Pi 运行在独立的“运行器”容器里（安装向导里选择安装），只能读写各工作区的目录，不开放任意 shell 命令。这里配置每个引擎的模型密钥和谁可以使用。' }),
       !data.runner ? el('div', { class: 'team-err', textContent: '还没有配置运行器：请运行 ./install.sh --reconfigure 并选择安装智能体运行器，或手动设置 RUNNER_URL / RUNNER_TOKEN。' }) : data.runnerError ? el('div', { class: 'team-err', textContent: '运行器不可用：' + data.runnerError }) : null, err);
     for (const e of data.engines) {

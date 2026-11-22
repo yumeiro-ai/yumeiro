@@ -36,6 +36,11 @@ import { PROJECT_LIMITS, PROJECT_DIR, MANIFEST_NAME, mimeOf, renderMarkdownPage,
 import { requestSetupHelper, requestUpdater, updaterConfigured } from './setup/setup-client.mjs';
 import { parseReleaseFeed, UPDATE_MAX_BYTES, verifySignedUpdateZip, compareVersions as compareReleaseVersions } from './updatepkg.mjs';
 import { createWriteStream } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { Breaker, RateGuard, isProviderFailure, normalizeBreakerConfig } from './breaker.mjs';
+import { normalizePolicy, validatePolicyInput, scanMessages, describeHits } from './dlp.mjs';
+import { LIMITS as LIMITS_MAIL, normalizeAccount as normalizeMailAccount, publicAccount, normalizeDraft as normalizeMailDraft, newDraft as newMailDraft, draftMessages as draftMailMessages, testAccount as testMailAccount, listInbox as listMailInbox, readMessage as readMailMessage, sendMail as sendMailMessage } from './mail.mjs';
+import { TIERS, FEATURES, PLAN_ENFORCEMENT, featureAllowed, effectivePlan, verifyLicense, seatLimit, normalizeEmailPolicy, validateEmailPolicyInput, emailAllowed, emailPolicyMessage } from './plans.mjs';
 import { pipeline } from 'node:stream/promises';
 import { normalizeImageConfig, publicImageConfig, defaultImageConfig, imagesEndpoint, imageAuthHeaders, buildComfyWorkflow, comfyImageRefs, cleanImageRequest, buildImageRequest, parseImageResponse, sniffImage, safeResultUrl, DIALECTS as IMAGE_DIALECTS, BATCH_MODES, LIMITS as IMAGE_LIMITS } from './images.mjs';
 import { readPrefs, userMemories, upsertMemory, explicitRemember, selectMemories, relatedConversations, buildMemoryBlock, extractionMessages, parseExtraction, pendingSummaryRange, summaryMessages, cleanText, looksSecret, MEMORY_LIMITS } from './memory.mjs';
@@ -281,7 +286,8 @@ async function getSession(req){
     return null;
   }
   const user=db.users[record.userId];
-  return user&&!user.disabled?{tokenHash,record,user}:null;
+  if(user&&!user.disabled){const ctx=requestContext.getStore();if(ctx)ctx.user=user;return {tokenHash,record,user}}
+  return null;
 }
 async function readBody(req,limit=128*1024){
   let size=0;const chunks=[];
@@ -681,8 +687,87 @@ async function collectDoctor(req,user,deep){
   };
 }
 const TRANSLATE_PROMPT='你是一个翻译器。把用户给出的全部文字翻译成自然、准确的简体中文：保留 Markdown 格式、代码块（代码本身不翻译）、链接、变量名和专有名词原文。只输出译文，不要解释、不要加前后缀；如果原文已经是中文，就原样输出。';
+// ---- 熔断与敏感内容拦截：所有模型调用共用的出口检查（breaker.mjs / dlp.mjs 是纯逻辑，这里负责接上数据和上下文） ----
+// requestContext 带着“这次请求是谁、关联哪个工作区”，这样十几处调用模型的地方都不用逐个改。
+const requestContext=new AsyncLocalStorage();
+const modelBreaker=new Breaker(),userGuard=new RateGuard();
+const breakerConfig=()=>normalizeBreakerConfig(db.settings.breaker||{});
+const dlpPolicy=()=>normalizePolicy(db.settings.dlp||{});
+// 套餐与注册邮箱域名：试用期一律放行（PLAN_ENFORCEMENT=false），只展示分级
+const currentPlan=()=>effectivePlan(db.settings.license?.key);
+// 在线购买地址：管理员（发行方）在“套餐与授权”页填写，必须是 https；没填就用环境变量 YUMEIRO_PURCHASE_URL
+const purchaseUrl=()=>{const v=String(db.settings.purchase?.url||process.env.YUMEIRO_PURCHASE_URL||'').trim();return /^https:\/\/[^\s]+$/.test(v)&&v.length<=500?v:''};
+const featureOn=id=>featureAllowed(id,currentPlan().tier);
+const emailPolicy=()=>featureOn('emailDomain')?normalizeEmailPolicy(db.settings.emailDomains||{}):{enabled:false,domains:[]};
+const emailBlocked=email=>{const policy=emailPolicy();return emailAllowed(email,policy)?'':emailPolicyMessage(policy)};
+let breakerSig='';
+function syncBreakerConfig(){const sig=JSON.stringify(db.settings.breaker||{});if(sig===breakerSig)return;breakerSig=sig;const config=breakerConfig();modelBreaker.setConfig(config);userGuard.setConfig(config)}
+// 安全事件只记“谁、什么时候、命中什么规则、几次”，绝不记匹配到的原文
+function securityEvent(kind,fields={}){
+  db.securityEvents||=[];
+  db.securityEvents.push({id:randomUUID(),at:Date.now(),kind,...fields});
+  if(db.securityEvents.length>500)db.securityEvents.splice(0,db.securityEvents.length-500);
+  addAudit(db,{userId:fields.userId||null,action:'security.'+kind,target:String(fields.model||fields.key||'').slice(0,80),detail:String(fields.summary||'').slice(0,200),ok:false});
+  persist().catch(()=>{});
+}
+const providerIdOf=target=>{const ref=String(target?.ref||'');return ref.startsWith('cindy-')?'cindy':envModels.includes(ref)?'env':ref.split('/')[0]};
+const breakerKeyOf=target=>{let host='';try{host=new URL(target.baseUrl).host}catch{host=String(target.baseUrl||'')}return host+'|'+target.model};
+let costCache={at:0,day:0,month:0};
+function costTotals(){
+  if(costCache.at>Date.now()-10000)return costCache;
+  const dk=dayKey(),mk=monthKey();let day=0,month=0;
+  for(const item of db.usage)if(dayKey(item.at)===dk)day+=item.cost||0;
+  for(const stat of Object.values(db.stats||{}))month+=stat.months?.[mk]?.cost||0;
+  return costCache={at:Date.now(),day,month};
+}
+const costFlags=new Set();
+function costGate(config){
+  if(!config.enabled||(!config.dailyCostLimit&&!config.monthlyCostLimit))return null;
+  const totals=costTotals(),unit=pricingCurrency();
+  const over=config.dailyCostLimit&&totals.day>=config.dailyCostLimit?{scope:'今日',used:totals.day,limit:config.dailyCostLimit,flag:'d'+dayKey()}:config.monthlyCostLimit&&totals.month>=config.monthlyCostLimit?{scope:'本月',used:totals.month,limit:config.monthlyCostLimit,flag:'m'+monthKey()}:null;
+  if(!over)return null;
+  if(!costFlags.has(over.flag)){costFlags.add(over.flag);securityEvent('cost',{summary:`${over.scope}模型费用已达上限 ${unit}${over.limit}（已用 ${unit}${over.used.toFixed(2)}），调用已暂停`})}
+  return `${over.scope}模型费用已达上限（${unit}${over.limit}），为防止超支已暂停调用。请联系管理员调整上限，或稍后再试。`;
+}
+// 内容检查。返回 null 表示放行；{block:true,message} 表示拦截。text 用来做“存消息之前”的预检，messages 用于出口检查。
+function contentGate({userId,workspaceId,target,messages,text}){
+  const policy=dlpPolicy();if(!policy.enabled)return null;
+  const model=String(target?.ref||target?.model||'').slice(0,120),workspace=workspaceId?db.workspaces[workspaceId]:null;
+  if(workspace?.label==='confidential'&&!policy.confidentialAllow.includes(providerIdOf(target))){
+    securityEvent('confidential',{userId,workspaceId,model,summary:`机密工作区「${workspace.name}」的内容被拦截，不允许发给「${providerIdOf(target)||'该模型'}」`});
+    return {block:true,message:`工作区「${workspace.name}」被标为“机密”，不能把它的内容发给这个模型服务。请换用公司允许的模型，或联系管理员。`};
+  }
+  const hits=scanMessages(text!==undefined?[{role:'user',content:text}]:messages,policy);
+  if(!hits.length)return null;
+  const block=policy.mode==='block';
+  securityEvent('dlp',{userId,workspaceId:workspaceId||null,model,rules:hits.map(h=>({id:h.id,label:h.label,count:h.count})),blocked:block,summary:(block?'已拦截：':'仅警告：')+describeHits(hits)});
+  return block?{block:true,message:`内容包含受保护的信息（${describeHits(hits)}），已拦截。请去掉这些内容后再发送；如确需发送，请联系管理员。`}:null;
+}
+// 调模型之前的统一检查：单人限速 → 费用上限 → 敏感内容 / 机密工作区 → 模型熔断。返回熔断用的键。
+function guardModelCall(target,messages){
+  syncBreakerConfig();
+  const config=breakerConfig(),ctx=requestContext.getStore()||{};
+  if(ctx.user){const rate=userGuard.check(ctx.user.id);if(!rate.ok){if(rate.tripped)securityEvent('abuse',{userId:ctx.user.id,summary:`每分钟请求超过 ${config.userRatePerMinute} 次，已暂停 ${config.userOpenSeconds} 秒`});throw fail(429,`请求太频繁，请 ${Math.ceil(rate.retryAfterMs/1000)} 秒后再试。`)}}
+  const spend=costGate(config);if(spend)throw fail(503,spend);
+  const blocked=contentGate({userId:ctx.user?.id||null,workspaceId:ctx.workspaceId||null,target,messages});
+  if(blocked?.block)throw Object.assign(fail(422,blocked.message),{blocked:true});
+  const key=breakerKeyOf(target),gate=modelBreaker.allow(key);
+  if(!gate.ok)throw fail(503,gate.manual?`这个模型已被管理员暂停使用（${gate.reason||'手动熔断'}）。`:`这个模型暂时不可用：连续出错，已自动熔断，约 ${Math.max(1,Math.ceil(gate.retryAfterMs/1000))} 秒后会自动试探恢复。`);
+  return key;
+}
+function reportModelFailure(key,reason){
+  const stateOf=()=>modelBreaker.snapshot().find(item=>item.key===key)?.state;
+  const before=stateOf();modelBreaker.failure(key,reason);
+  if(stateOf()==='open'&&before!=='open')securityEvent('breaker',{key,summary:`模型 ${key} 连续失败，已自动熔断：${String(reason).slice(0,100)}`});
+}
+// 一次调用的结果上报：成功 / 失败 / 都不算（取消、本地错误）。没上报的会在 finally 里把试探名额还回去。
+function breakerReporter(key){
+  let settled=false;
+  return {ok(){settled=true;modelBreaker.success(key)},fail(reason){settled=true;reportModelFailure(key,reason)},done(){if(!settled)modelBreaker.release(key)}};
+}
 async function askModel(messages,ref=defaultModelRef(),system=systemPrompt){
   const target=resolveModel(ref);if(!target)throw Object.assign(new Error('模型不可用或尚未接入：'+ref),{status:503});
+  const report=breakerReporter(guardModelCall(target,messages));
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),Math.max(10000,Number(process.env.MODEL_TIMEOUT_MS||120000)));
   try{
@@ -692,7 +777,8 @@ async function askModel(messages,ref=defaultModelRef(),system=systemPrompt){
       headers:{...(target.apiKey?{Authorization:'Bearer '+target.apiKey}:{}),'Content-Type':'application/json',Accept:'application/json'},
       body:JSON.stringify({model:target.model,messages:modelMessages(messages,system),stream:false})
     });
-    if(!response.ok)throw Object.assign(new Error('模型服务返回 HTTP '+response.status),{status:502});
+    if(!response.ok){if(isProviderFailure(response.status))report.fail('HTTP '+response.status);else report.ok();throw Object.assign(new Error('模型服务返回 HTTP '+response.status),{status:502})}
+    report.ok();
     const data=await response.json();
     const reply=contentText(data?.choices?.[0]?.message?.content).trim();
     if(!reply)throw Object.assign(new Error('模型服务没有返回文本内容'),{status:502});
@@ -701,9 +787,10 @@ async function askModel(messages,ref=defaultModelRef(),system=systemPrompt){
     const inputTokens=count(input),outputTokens=count(output),totalTokens=count(total)??(inputTokens!==null&&outputTokens!==null?inputTokens+outputTokens:null);
     return {reply,usage:inputTokens===null&&outputTokens===null&&totalTokens===null?null:{inputTokens,outputTokens,totalTokens}};
   }catch(error){
-    if(error.name==='AbortError')throw Object.assign(new Error('模型请求超时'),{status:504});
+    if(error.name==='AbortError'){report.fail('请求超时');throw Object.assign(new Error('模型请求超时'),{status:504})}
+    if(!error.status)report.fail('网络错误：'+String(error.cause?.code||error.message).slice(0,80));
     throw error;
-  }finally{clearTimeout(timeout)}
+  }finally{clearTimeout(timeout);report.done()}
 }
 const pickModel=(ref,user)=>ref&&resolveModel(ref,user)?ref:'';
 // user：把该用户自己的 Cindy 托管模型也算进去（之前只看全站模型，导致只有 Cindy 模型的用户被误拦）
@@ -720,6 +807,7 @@ function normalizeUsage(usage){
 // 流式调用：逐段回调增量文本；signal 中止（用户停止/断开）时返回已生成的部分。
 async function streamModel(messages,onDelta,signal,ref=defaultModelRef(),system=systemPrompt){
   const target=resolveModel(ref);if(!target)throw Object.assign(new Error('模型不可用或尚未接入：'+ref),{status:503});
+  const report=breakerReporter(guardModelCall(target,messages));
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),Math.max(10000,Number(process.env.MODEL_TIMEOUT_MS||120000)));
   const onAbort=()=>controller.abort();signal?.addEventListener('abort',onAbort);
   let reply='',usage=null,aborted=false;
@@ -730,8 +818,9 @@ async function streamModel(messages,onDelta,signal,ref=defaultModelRef(),system=
       headers:{...(target.apiKey?{Authorization:'Bearer '+target.apiKey}:{}),'Content-Type':'application/json',Accept:'text/event-stream'},
       body:JSON.stringify({model:target.model,messages:modelMessages(messages,system),stream:true,stream_options:{include_usage:true}})
     });
-    if(!response.ok)throw Object.assign(new Error('模型服务返回 HTTP '+response.status),{status:502});
-    if(!response.body)throw Object.assign(new Error('模型服务没有返回数据流'),{status:502});
+    if(!response.ok){if(isProviderFailure(response.status))report.fail('HTTP '+response.status);else report.ok();throw Object.assign(new Error('模型服务返回 HTTP '+response.status),{status:502})}
+    if(!response.body){report.fail('没有返回数据流');throw Object.assign(new Error('模型服务没有返回数据流'),{status:502})}
+    report.ok();
     const decoder=new TextDecoder();let buffer='';
     const handle=line=>{
       if(!line.startsWith('data:'))return;
@@ -749,9 +838,9 @@ async function streamModel(messages,onDelta,signal,ref=defaultModelRef(),system=
   }catch(error){
     if(error.name==='AbortError'||error.code==='ABORT_ERR'){
       aborted=true;
-      if(!signal?.aborted)throw Object.assign(new Error('模型请求超时'),{status:504});
-    }else throw error;
-  }finally{clearTimeout(timeout);signal?.removeEventListener('abort',onAbort)}
+      if(!signal?.aborted){report.fail('请求超时');throw Object.assign(new Error('模型请求超时'),{status:504})}
+    }else{if(!error.status)report.fail('网络错误：'+String(error.cause?.code||error.message).slice(0,80));throw error}
+  }finally{clearTimeout(timeout);signal?.removeEventListener('abort',onAbort);report.done()}
   if(!reply.trim()&&!aborted)throw Object.assign(new Error('模型服务没有返回文本内容'),{status:502});
   return {reply,usage,aborted};
 }
@@ -962,6 +1051,7 @@ async function handleV1(req,res,pathname){
   const auth=bearerUser(req);
   if(!auth)return error(401,'无效或缺少 API 令牌','invalid_api_key');
   const {user}=auth;
+  {const ctx=requestContext.getStore();if(ctx)ctx.user=user}
   if(req.method==='GET'&&pathname==='/v1/models'){
     const data=[...modelCatalog(user).map(item=>({id:item.alias||item.ref,object:'model',owned_by:item.provider,name:item.label||item.model,display_name:item.label||item.model})),...visibleAgents(user).map(agent=>({id:'agent:'+agent.id,object:'model',owned_by:'cindy-agent',name:agent.name,description:agent.description}))];
     return json(res,200,{object:'list',data});
@@ -1159,6 +1249,7 @@ const safeEngine=(engine,health,user)=>{
 };
 // 在运行器里执行一次智能体调用，逐段回调文本；返回最终文本与用量。
 async function runEngine({engine,prompt,workspaceId,mode,system,model,gateway,signal,onDelta,userId}){
+  {const blocked=contentGate({userId,workspaceId,target:{ref:'engine:'+engine,model:engine},messages:[{role:'user',content:prompt}]});if(blocked?.block)throw Object.assign(fail(422,blocked.message),{blocked:true})}
   const config=engineConfig(engine),vendor=vendorOfEngine(engine);
   guardCheck(vendor,{user:db.users[userId],what:'engine'});
   addAudit(db,{userId,action:'engine.run',target:engine,detail:'workspace '+workspaceId+' · '+mode});
@@ -1250,7 +1341,7 @@ function workspaceSkillPrompt(workspace){
   for(const skill of skills){const block='## '+skill.title+(skill.description?'\n'+skill.description:'')+'\n\n'+skill.content;if(block.length>budget)break;budget-=block.length;blocks.push(block)}
   return blocks.length?'# 工作区「'+workspace.name+'」的技能\n这段对话属于该工作区；遇到相关任务时按下面的说明执行。\n\n'+blocks.join('\n\n'):'';
 }
-const safeWorkspace=(workspace,user)=>({id:workspace.id,name:workspace.name,createdAt:workspace.createdAt,visibility:workspaceVisibility(workspace),canManage:canManageWorkspace(workspace,user),mine:workspace.ownerId===user.id,owner:db.users[workspace.ownerId]?.email||null,members:(workspace.memberIds||[]).map(id=>db.users[id]?.email).filter(Boolean),memberDetails:workspaceMemberDetails(workspace)});
+const safeWorkspace=(workspace,user)=>({id:workspace.id,name:workspace.name,createdAt:workspace.createdAt,label:workspace.label==='confidential'?'confidential':'normal',visibility:workspaceVisibility(workspace),canManage:canManageWorkspace(workspace,user),mine:workspace.ownerId===user.id,owner:db.users[workspace.ownerId]?.email||null,members:(workspace.memberIds||[]).map(id=>db.users[id]?.email).filter(Boolean),memberDetails:workspaceMemberDetails(workspace)});
 function findWorkspaceMember(identifier,workspace){
   const value=String(identifier||'').trim(),lower=value.toLowerCase();if(!value)return null;
   if(db.users[value]&&db.users[value].role==='member'&&!db.users[value].disabled)return db.users[value];
@@ -1566,6 +1657,7 @@ const staticFiles={
   '/side.js':{name:'side.js',type:'text/javascript; charset=utf-8'},
   '/group.js':{name:'group.js',type:'text/javascript; charset=utf-8'},
   '/dialog.js':{name:'dialog.js',type:'text/javascript; charset=utf-8'},
+  '/select.js':{name:'select.js',type:'text/javascript; charset=utf-8'},
   '/home.js':{name:'home.js',type:'text/javascript; charset=utf-8'},
   '/side-tools.js':{name:'side-tools.js',type:'text/javascript; charset=utf-8'},
   '/recover.js':{name:'recover.js',type:'text/javascript; charset=utf-8'},
@@ -2127,6 +2219,7 @@ async function handleRemoteAgent(req,res,pathname,url){
 }
 
 const server=http.createServer(async(req,res)=>{
+  requestContext.enterWith({user:null,workspaceId:null});
   try{
     const url=new URL(req.url,'http://'+(req.headers.host||'localhost'));
     const pathname=url.pathname;
@@ -2271,6 +2364,7 @@ const server=http.createServer(async(req,res)=>{
         const body=await readBody(req),email=String(invite.email||body.email||'').trim().toLowerCase(),password=String(body.password||'');
         if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254)return json(res,400,{error:'邮箱格式无效'});
         if(password.length<12||password.length>200)return json(res,400,{error:'密码至少 12 个字符'});
+        if(emailBlocked(email))return json(res,403,{error:emailBlocked(email)});
         if(Object.values(db.users).some(user=>user.email===email))return json(res,409,{error:'该邮箱已注册，请直接登录'});
         const user={id:randomUUID(),email,displayName:String(body.displayName||'').trim().slice(0,60)||email,passwordHash:await hashPassword(password),role:'member',authType:'local',...invite.limits,createdAt:Date.now(),createdBy:invite.createdBy,inviteId:invite.id};
         db.users[user.id]=user;invite.uses+=1;(invite.usedBy||=[]).push({userId:user.id,at:Date.now()});user.lastLoginAt=Date.now();
@@ -2684,6 +2778,7 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req),email=String(body.email||'').trim().toLowerCase(),password=String(body.password||''),limits={...readLimits(body),...readAllowedHours(body)};
       if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254)return json(res,400,{error:'邮箱格式无效'});
       if(password.length<12||password.length>200)return json(res,400,{error:'成员初始密码至少 12 个字符'});
+      if(emailBlocked(email))return json(res,400,{error:emailBlocked(email)});
       if(Object.values(db.users).some(user=>user.email===email))return json(res,409,{error:'该邮箱已存在'});
       const user={id:randomUUID(),email,displayName:String(body.displayName||'').trim().slice(0,60)||email,passwordHash:await hashPassword(password),role:"member",authType:"local",...limits,createdAt:Date.now(),createdBy:session.user.id};
       db.users[user.id]=user;await persist();await recordSecurityEvent('member_created',req,session.user.id,{targetUserId:user.id});
@@ -2699,6 +2794,7 @@ const server=http.createServer(async(req,res)=>{
       const body=await readBody(req),limits=readLimits(body);
       const email=String(body.email||'').trim().toLowerCase();
       if(email&&(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)||email.length>254))return json(res,400,{error:'邮箱格式无效'});
+      if(email&&emailBlocked(email))return json(res,400,{error:emailBlocked(email)});
       const days=Number(body.expiresInDays??7),maxUses=Number(body.maxUses??1);
       if(!Number.isInteger(days)||days<1||days>90)return json(res,400,{error:'有效期必须是 1–90 天'});
       if(!Number.isInteger(maxUses)||maxUses<1||maxUses>100)return json(res,400,{error:'可用次数必须是 1–100'});
@@ -2838,6 +2934,79 @@ const server=http.createServer(async(req,res)=>{
       }catch(error){return json(res,[400,413,429].includes(error.status)?error.status:502,{error:error.message||'沙箱执行失败'})}
       finally{sandboxBusy.delete(session.user.id)}
     }
+    // ---- 安全与熔断（管理员）：敏感内容规则、机密工作区允许名单、熔断与费用上限、实时状态与事件 ----
+    if(pathname==='/api/admin/plan'&&req.method==='GET'){
+      if(!isAdmin)return adminOnly();
+      const plan=currentPlan(),buy=purchaseUrl();
+      return json(res,200,{enforced:PLAN_ENFORCEMENT,tier:plan.tier,license:plan.license?{id:plan.license.id,tier:plan.license.tier,org:plan.license.org,seats:plan.license.seats,exp:plan.license.exp}:null,licenseError:plan.error,
+        tiers:TIERS,features:FEATURES,members:Object.keys(db.users).length,seatLimit:seatLimit(plan.tier,true),purchaseUrl:buy,purchaseUrlEditable:true});
+    }
+    if(pathname==='/api/admin/plan/purchase'&&req.method==='PUT'){
+      if(!isAdmin)return adminOnly();
+      const url=String((await readBody(req)).url||'').trim();
+      if(url&&!/^https:\/\/[^\s]+$/.test(url))return json(res,400,{error:'购买地址必须以 https:// 开头'});
+      if(url.length>500)return json(res,400,{error:'购买地址太长'});
+      db.settings.purchase={url};addAudit(db,{userId:session.user.id,action:'plan.purchase.update',ip:clientIp(req)});await persist();
+      return json(res,200,{ok:true,purchaseUrl:purchaseUrl()});
+    }
+    if(pathname==='/api/admin/plan/license'&&(req.method==='POST'||req.method==='DELETE')){
+      if(!isAdmin)return adminOnly();
+      if(req.method==='DELETE'){delete db.settings.license;addAudit(db,{userId:session.user.id,action:'plan.license.remove',ip:clientIp(req)});await persist();return json(res,200,{ok:true})}
+      if(rateLimited(req,'license'))return json(res,429,{error:'尝试过多，请稍后再试'});
+      const key=String((await readBody(req)).key||'').trim().slice(0,2000),r=verifyLicense(key);
+      if(!r.ok)return json(res,400,{error:r.error});
+      if(r.expired)return json(res,400,{error:'这个授权已经过期'});
+      db.settings.license={key,activatedAt:Date.now()};addAudit(db,{userId:session.user.id,action:'plan.license.activate',target:r.license.id,detail:r.license.tier,ip:clientIp(req)});await persist();
+      return json(res,200,{ok:true,tier:r.license.tier});
+    }
+    if(pathname==='/api/admin/security'&&req.method==='GET'){
+      if(!isAdmin)return adminOnly();
+      syncBreakerConfig();
+      const totals=costTotals(),emailOf=id=>db.users[id]?.email||'';
+      const keyOf=(provider,model)=>{let host='';try{host=new URL(provider.baseUrl).host}catch{host=String(provider.baseUrl||'')}return host+'|'+model};
+      return json(res,200,{
+        dlp:dlpPolicy(),breaker:breakerConfig(),emailDomains:normalizeEmailPolicy(db.settings.emailDomains||{}),currency:pricingCurrency(),
+        providers:[...Object.values(db.providers).map(item=>({id:item.slug,name:item.name||item.slug})),...(envModels.length?[{id:'env',name:'服务器配置的模型'}]:[]),{id:'cindy',name:'Cindy 账号模型'}],
+        engines:ENGINES.map(engine=>({id:'engine:'+engine,name:ENGINE_LABELS[engine]})),
+        models:Object.values(db.providers).flatMap(item=>(item.models||[]).map(model=>({key:keyOf(item,model),label:item.slug+'/'+model}))).slice(0,300),
+        states:{models:modelBreaker.snapshot(),users:userGuard.snapshot().map(item=>({...item,email:emailOf(item.userId)}))},
+        costs:{day:totals.day,month:totals.month},
+        events:(db.securityEvents||[]).slice(-100).reverse().map(event=>({...event,email:emailOf(event.userId)})),
+        labeled:Object.values(db.workspaces).filter(item=>item.label==='confidential').map(item=>({id:item.id,name:item.name}))
+      });
+    }
+    if(pathname==='/api/admin/security'&&req.method==='PUT'){
+      if(!isAdmin)return adminOnly();
+      const body=await readBody(req);
+      if(body.dlp!==undefined){const problem=validatePolicyInput(body.dlp);if(problem)return json(res,400,{error:problem});db.settings.dlp=normalizePolicy(body.dlp)}
+      if(body.emailDomains!==undefined){const problem=validateEmailPolicyInput(body.emailDomains);if(problem)return json(res,400,{error:problem});db.settings.emailDomains=normalizeEmailPolicy(body.emailDomains)}
+      if(body.breaker!==undefined){db.settings.breaker=normalizeBreakerConfig(body.breaker);costCache.at=0}
+      syncBreakerConfig();
+      addAudit(db,{userId:session.user.id,action:'security.update',target:'dlp/breaker',detail:(body.dlp!==undefined?'敏感内容规则 ':'')+(body.breaker!==undefined?'熔断设置':''),ip:clientIp(req)});await persist();
+      return json(res,200,{ok:true,dlp:dlpPolicy(),breaker:breakerConfig(),emailDomains:normalizeEmailPolicy(db.settings.emailDomains||{})});
+    }
+    if(pathname==='/api/admin/security/breaker'&&req.method==='POST'){
+      if(!isAdmin)return adminOnly();
+      const body=await readBody(req),key=String(body.key||'').slice(0,200);
+      if(body.action==='trip'&&key)modelBreaker.trip(key,'管理员手动熔断');
+      else if(body.action==='reset'&&key)modelBreaker.reset(key);
+      else if(body.action==='reset-user'&&body.userId)userGuard.reset(String(body.userId));
+      else return json(res,400,{error:'操作无效'});
+      addAudit(db,{userId:session.user.id,action:'security.breaker',target:key||String(body.userId||''),detail:String(body.action),ip:clientIp(req)});await persist();
+      return json(res,200,{ok:true});
+    }
+    // 引擎与隔离自检：只读，不调用模型、不需要密钥。真正的检查在运行器进程里跑（它看到的就是引擎实际的运行环境），这里只转发结果
+    if(pathname==='/api/admin/engines/selfcheck'&&req.method==='GET'){
+      if(!isAdmin)return adminOnly();
+      if(!runnerEnabled)return json(res,200,{enabled:false,message:'还没有配置智能体运行器，没有可检查的引擎。请先在安装向导里安装运行器。'});
+      try{
+        const response=await runnerFetch('/selfcheck',{signal:AbortSignal.timeout(30000)});
+        if(!response.ok)return json(res,502,{error:'运行器返回 HTTP '+response.status+'。如果刚升级过主服务，请把运行器也更新到同一个版本（旧运行器没有自检接口）。'});
+        const result=await response.json();
+        addAudit(db,{userId:session.user.id,action:'engines.selfcheck',target:'runner',detail:`通过 ${result.summary?.ok??0} · 警告 ${result.summary?.warn??0} · 失败 ${result.summary?.fail??0}`,ip:clientIp(req),ok:result.ok!==false});await persist();
+        return json(res,200,{enabled:true,...result});
+      }catch(error){return json(res,502,{error:'无法连接运行器：'+(error.name==='TimeoutError'?'自检超时':error.message)})}
+    }
     if(pathname==='/api/admin/engines'&&req.method==='GET'){
       if(!isAdmin)return adminOnly();
       const health=await runnerHealth(true);
@@ -2948,6 +3117,7 @@ const server=http.createServer(async(req,res)=>{
       }
       const body=await readBody(req);
       if(body.name!==undefined){const name=String(body.name).trim().slice(0,60);if(!name)return json(res,400,{error:'名称不能为空'});workspace.name=name}
+      if(body.label!==undefined){if(session.user.role!=='admin')return json(res,403,{error:'只有管理员可以修改工作区的“机密”标签'});workspace.label=body.label==='confidential'?'confidential':'normal';addAudit(db,{userId:session.user.id,action:'workspace.label',target:workspace.name,detail:workspace.label,ip:clientIp(req)})}
       if(body.visibility!==undefined){if(!['private','members','team','public'].includes(body.visibility))return json(res,400,{error:'工作区可见性无效'});if(body.visibility==='private'&&Array.isArray(body.members)&&body.members.length)return json(res,400,{error:'仅自己空间不能添加指定成员'});workspace.visibility=body.visibility}
       if(body.members!==undefined){
         const emails=[...new Set((Array.isArray(body.members)?body.members:[]).map(item=>String(item).trim().toLowerCase()).filter(Boolean))];
@@ -3037,6 +3207,85 @@ const server=http.createServer(async(req,res)=>{
         recordUsage(session.user.id,result.usage,ref,'guide');await persist();
         return json(res,200,parseGuideReply(result.reply));
       }finally{guideBusy.delete(session.user.id)}
+    }
+    // ───────── AI 邮箱：绑定自己的公司邮箱，AI 读信和起草，本人确认后才发送 ─────────
+    if(pathname==='/api/admin/mail'&&(req.method==='GET'||req.method==='PUT')){
+      if(!isAdmin)return adminOnly();
+      if(req.method==='PUT'){const body=await readBody(req);db.settings.mail={allowPrivate:Boolean(body.allowPrivate)};addAudit(db,{userId:session.user.id,action:'mail.settings',detail:db.settings.mail.allowPrivate?'允许内网邮件服务器':'只允许公网邮件服务器',ip:clientIp(req)});await persist()}
+      return json(res,200,{allowPrivate:Boolean(db.settings.mail?.allowPrivate)});
+    }
+    if(pathname==='/api/mail'||pathname.startsWith('/api/mail/')){
+      if(!featureOn('aiMail'))return json(res,403,{error:'AI 邮箱属于专业版功能，请升级后使用'});
+      const user=session.user,allowPrivate=Boolean(db.settings.mail?.allowPrivate),day=dayKey(),mailFail=error=>json(res,error.status||502,{error:error.blocked?error.message:'邮件服务器出错：'+String(error.responseText||error.message||'连接失败').slice(0,160)});
+      const stat=user.mailStat?.day===day?user.mailStat:(user.mailStat={day,drafts:0,sends:0});
+      const needAccount=()=>user.mail?null:json(res,400,{error:'还没有绑定邮箱，请先在“AI 邮箱”页绑定'});
+      if(pathname==='/api/mail'&&req.method==='GET')return json(res,200,{account:publicAccount(user.mail),drafts:(user.mailDrafts||[]).slice(-LIMITS_MAIL.drafts).reverse(),sendsToday:stat.sends,sendLimit:LIMITS_MAIL.sendsPerDay,domains:emailPolicy().enabled?emailPolicy().domains:[],allowPrivate});
+      if(pathname==='/api/mail/account'&&req.method==='PUT'){
+        const body=await readBody(req),r=normalizeMailAccount(body,user.mail);if(r.error)return json(res,400,{error:r.error});
+        const policy=emailPolicy();if(policy.enabled&&!emailAllowed(r.account.email,policy))return json(res,400,{error:'这个邮箱不在公司允许的域名内：'+policy.domains.map(d=>'@'+d).join('、')});
+        if(rateLimited(req,'mailbind'))return json(res,429,{error:'尝试过多，请稍后再试'});
+        try{await testMailAccount(r.account,allowPrivate)}catch(error){return json(res,400,{error:'连接测试没通过：'+String(error.responseText||error.message||'无法连接').slice(0,160)})}
+        user.mail=r.account;addAudit(db,{userId:user.id,action:'mail.bind',target:r.account.email,ip:clientIp(req)});await persist();
+        return json(res,200,{account:publicAccount(user.mail)});
+      }
+      if(pathname==='/api/mail/account'&&req.method==='DELETE'){delete user.mail;delete user.mailDrafts;addAudit(db,{userId:user.id,action:'mail.unbind',ip:clientIp(req)});await persist();return json(res,200,{ok:true})}
+      if(pathname==='/api/mail/inbox'&&req.method==='GET'){
+        const none=needAccount();if(none)return none;
+        try{return json(res,200,{messages:await listMailInbox(user.mail,{limit:20},allowPrivate)})}catch(error){return mailFail(error)}
+      }
+      const msgRoute=pathname.match(/^\/api\/mail\/message\/(\d{1,12})$/);
+      if(msgRoute&&req.method==='GET'){
+        const none=needAccount();if(none)return none;
+        try{return json(res,200,{message:await readMailMessage(user.mail,Number(msgRoute[1]),allowPrivate)})}catch(error){return mailFail(error)}
+      }
+      if(pathname==='/api/mail/draft'&&req.method==='POST'){
+        const none=needAccount();if(none)return none;
+        const body=await readBody(req),limit=Math.max(1,Number(process.env.MAIL_DRAFT_DAILY_LIMIT)||100);
+        if(stat.drafts>=limit)return json(res,429,{error:'今天的 AI 起草次数已用完（'+limit+' 次），请明天再试'});
+        if(!String(body.instruction||'').trim()&&!body.uid)return json(res,400,{error:'请写下你想让 AI 写什么'});
+        if(guideBusy.has('mail:'+user.id))return json(res,429,{error:'上一封还在起草中，请稍等'});
+        ensureModelReady(user);guideBusy.add('mail:'+user.id);
+        try{
+          let original=null;if(body.uid)original=await readMailMessage(user.mail,Number(body.uid),allowPrivate);
+          const prompt=draftMailMessages({original,instruction:body.instruction,myEmail:user.mail.email,myName:user.displayName});
+          const ref=pickModel(String(body.model||''),user)||defaultModelRef(user);
+          const result=await askModel(prompt.messages,ref,prompt.system);
+          stat.drafts++;recordUsage(user.id,result.usage,ref,'mail');
+          const reply=String(result.reply||'').trim().slice(0,LIMITS_MAIL.body);
+          const fields=original?{to:[original.replyTo||original.fromAddress].filter(Boolean),cc:[],subject:/^(re|回复)[:：]/i.test(original.subject)?original.subject:'Re: '+original.subject,body:reply,inReplyTo:original.messageId,references:[original.references,original.messageId].filter(Boolean).join(' ').slice(-1500),source:{from:original.from.slice(0,120),subject:original.subject.slice(0,120)}}:{to:[],cc:[],subject:String(body.subject||'').slice(0,LIMITS_MAIL.subject),body:reply,inReplyTo:'',references:'',source:null};
+          const draft=newMailDraft(fields);(user.mailDrafts||=[]).push(draft);if(user.mailDrafts.length>LIMITS_MAIL.drafts)user.mailDrafts.splice(0,user.mailDrafts.length-LIMITS_MAIL.drafts);
+          await persist();return json(res,201,{draft});
+        }catch(error){return mailFail(error)}finally{guideBusy.delete('mail:'+user.id)}
+      }
+      const draftRoute=pathname.match(/^\/api\/mail\/draft\/([0-9a-f-]{36})(\/send)?$/i);
+      if(draftRoute){
+        const draft=(user.mailDrafts||[]).find(item=>item.id===draftRoute[1]);if(!draft)return json(res,404,{error:'草稿不存在'});
+        if(!draftRoute[2]&&req.method==='DELETE'){user.mailDrafts=user.mailDrafts.filter(item=>item!==draft);await persist();return json(res,200,{ok:true})}
+        if(draft.status!=='draft')return json(res,409,{error:'这封已经发送过了'});
+        if(!draftRoute[2]&&req.method==='PUT'){
+          const r=normalizeMailDraft(await readBody(req),draft);if(r.error)return json(res,400,{error:r.error});
+          Object.assign(draft,r.draft);await persist();return json(res,200,{draft});
+        }
+        if(draftRoute[2]&&req.method==='POST'){
+          const none=needAccount();if(none)return none;
+          const body=await readBody(req);
+          if(body.confirm!==true)return json(res,400,{error:'发送前需要你本人确认'});
+          const r=normalizeMailDraft({},draft);if(r.error)return json(res,400,{error:r.error});
+          if(!r.draft.to.length)return json(res,400,{error:'请先填写收件人'});
+          if(!r.draft.subject.trim()||!r.draft.body.trim())return json(res,400,{error:'主题和正文都不能为空'});
+          if(/【请补充[:：]/.test(r.draft.body))return json(res,400,{error:'正文里还有“【请补充：…】”没改，请先补全'});
+          if(stat.sends>=LIMITS_MAIL.sendsPerDay)return json(res,429,{error:'今天的发信次数已用完（'+LIMITS_MAIL.sendsPerDay+' 封），请明天再试'});
+          const gate=contentGate({userId:user.id,workspaceId:null,target:{ref:'mail-out'},text:r.draft.subject+'\n'+r.draft.body});
+          if(gate?.block)return json(res,422,{error:gate.message,blocked:true});
+          try{
+            const sent=await sendMailMessage(user.mail,{...r.draft,inReplyTo:draft.inReplyTo,references:draft.references},allowPrivate);
+            draft.status='sent';draft.sentAt=Date.now();stat.sends++;
+            addAudit(db,{userId:user.id,action:'mail.send',target:r.draft.to.length+' 位收件人',detail:'主题长度 '+r.draft.subject.length,ip:clientIp(req)});await persist();
+            return json(res,200,{ok:true,draft,messageId:sent.messageId});
+          }catch(error){return mailFail(error)}
+        }
+      }
+      return json(res,404,{error:'不存在'});
     }
     // 侧边栏同步（便签 / 待办 / 片段）：PUT 和服务器上的合并后返回合并结果，不是覆盖
     if(pathname==='/api/side'&&(req.method==='GET'||req.method==='PUT')){
@@ -4299,6 +4548,8 @@ const server=http.createServer(async(req,res)=>{
       if(imageAtts.length>visionConfig().maxImages)return json(res,400,{error:'一条消息最多带 '+visionConfig().maxImages+' 张图片',conversation_id:item.id});
       if(docAtts.length>DOC_LIMITS.maxFiles)return json(res,400,{error:'一条消息最多带 '+DOC_LIMITS.maxFiles+' 个文件',conversation_id:item.id});
       if(imageAtts.length&&visionRoute(visionConfig(),resolveModel(useModel,session.user)?.model||useModel)==='none')return json(res,400,{error:NO_ROUTE_MESSAGE,conversation_id:item.id});
+      {const linked=item.workspaceId&&db.workspaces[item.workspaceId]?item.workspaceId:null,ctx=requestContext.getStore();if(ctx)ctx.workspaceId=linked;
+        const pre=contentGate({userId:session.user.id,workspaceId:linked,target:resolveModel(useModel,session.user),text:message});if(pre?.block)return json(res,422,{error:pre.message,conversation_id:item.id,blocked:true})}
       busyConversations.add(item.id);
       let memoryUsed=0;
       try{
@@ -4327,13 +4578,15 @@ const server=http.createServer(async(req,res)=>{
           send('done',{usage:result.usage,aborted:result.aborted,memory_used:memoryUsed,conversation:safeConversation(item),alerts:quotaAlerts(session.user)});
         }catch(error){
           console.error('模型流式请求失败：',error.message);
+          if(error.blocked&&item.messages.at(-1)?.role==='user')item.messages.pop();
           send('error',{error:error.message||'模型服务请求失败'});
         }
         return res.end();
       }catch(error){
         console.error('模型请求失败：',error.message);
+        if(error.blocked&&item.messages.at(-1)?.role==='user')item.messages.pop();
         if(res.headersSent){res.end();return}
-        return json(res,error.status||502,{error:error.message||'模型服务请求失败',conversation_id:item.id});
+        return json(res,error.status||502,{error:error.message||'模型服务请求失败',conversation_id:item.id,...(error.blocked?{blocked:true}:{})});
       }finally{busyConversations.delete(item.id)}
     }
     return json(res,404,{error:'未找到'});

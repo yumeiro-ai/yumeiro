@@ -11,10 +11,19 @@ import { createReadStream } from 'node:fs';
 import { walkFiles, snapshotFile, snapshotWorkspace, listVersions, history, readVersion, restoreVersion, deleteWithBackup } from './filestore.mjs';
 import { runWithFiles, mintExecToken, verifyExecToken, LANGUAGES, SANDBOX_LIMITS, SYNC_LIMITS } from './sandbox.mjs';
 import { sanitizeMcp, claudeMcp, codexMcp, sanitizeGateway, codexGateway, anthropicBase, piAgentFiles, GW_PROVIDER, GW_KEY_ENV } from './mcp.mjs';
+import { runSelfCheck } from './selfcheck.mjs';
 
 export const ENGINES = ['claude', 'codex', 'pi'];
 const ENV_KEY = /^[A-Z][A-Z0-9_]{1,60}_(API_KEY|BASE_URL|TOKEN)$/; // 只允许传模型相关变量，拒绝 PATH / NODE_OPTIONS / LD_PRELOAD 等
 const WORKSPACE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+// 传给引擎进程的环境：基础部分只有这几项；请求里额外带的变量只放行模型相关的（*_API_KEY / *_BASE_URL / *_TOKEN）。
+// 运行和“引擎与隔离自检”用的是同一份函数，所以自检验证的就是真实行为。
+export const baseChildEnv = (env, root, engine) => ({ PATH: env.PATH, HOME: path.join(root, '.home', engine), LANG: 'C.UTF-8', CI: '1', NO_COLOR: '1', TERM: 'dumb' });
+export function filterEngineEnv(extra) {
+  const out = {};
+  for (const [key, value] of Object.entries(extra || {})) if (ENV_KEY.test(key) && typeof value === 'string' && value.length < 4096) out[key] = value;
+  return out;
+}
 
 const splitCmd = value => String(value).trim().split(/\s+/).filter(Boolean);
 export function engineCommand(engine, env = process.env) {
@@ -139,8 +148,8 @@ export function createRunner({ token, sandboxToken, root, env = process.env, log
     const editing = mode !== 'readonly', workspaceId = String(body.workspace);
     // 智能体动手改文件之前先存一版；结束后再存一版。相同内容不会重复存。
     if (editing) await snapshotWorkspace(root, workspaceId, dir).catch(error => log('运行前备份失败：' + error.message));
-    const childEnv = { PATH: env.PATH, HOME: path.join(root, '.home', engine), LANG: 'C.UTF-8', CI: '1', NO_COLOR: '1', TERM: 'dumb' };
-    for (const [key, value] of Object.entries(body.env || {})) if (ENV_KEY.test(key) && typeof value === 'string' && value.length < 4096) childEnv[key] = value;
+    const childEnv = baseChildEnv(env, root, engine);
+    Object.assign(childEnv, filterEngineEnv(body.env));
     await mkdir(childEnv.HOME, { recursive: true });
 
     let mcpList, gateway; try { mcpList = sanitizeMcp(body.mcp, env); gateway = sanitizeGateway(body.gateway); } catch (error) { return json(res, error.status || 400, { error: error.message }); }
@@ -291,6 +300,13 @@ export function createRunner({ token, sandboxToken, root, env = process.env, log
         const engines = {};
         for (const engine of ENGINES) { versions[engine] ??= await probe(engine); engines[engine] = { installed: Boolean(versions[engine]), version: versions[engine] }; }
         return json(res, 200, { ok: true, running, maxConcurrent, engines, sandboxConfigured: Boolean(env.SANDBOX_URL), tools: { npx: (toolVersions.npx ??= await probeTool('npx')), uvx: (toolVersions.uvx ??= await probeTool('uvx')) } });
+      }
+      if (req.method === 'GET' && url.pathname === '/selfcheck') {
+        // 引擎与隔离自检：只读，不调用模型。在运行器自己的进程里跑，看到的就是引擎真实的运行环境
+        for (const engine of ENGINES) versions[engine] ??= await probe(engine);
+        const sandboxBase = String(env.SANDBOX_URL || '').replace(/\/+$/, '');
+        const sandboxHealth = sandboxBase ? async () => { const r = await fetch(sandboxBase + '/health', { redirect: 'error', signal: AbortSignal.timeout(5000), headers: { Authorization: 'Bearer ' + (sandboxToken || token) } }); return r.ok ? await r.json() : { ok: false }; } : null;
+        return json(res, 200, await runSelfCheck({ root, env, versions, tools: { npx: (toolVersions.npx ??= await probeTool('npx')), uvx: (toolVersions.uvx ??= await probeTool('uvx')) }, resolveInWorkspace, baseChildEnv, filterEngineEnv, sandboxHealth }));
       }
       if (req.method === 'POST' && url.pathname === '/run') return await handleRun(req, res);
 

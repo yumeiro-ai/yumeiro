@@ -21,7 +21,7 @@ RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi 
  && for c in claude codex pi; do command -v "$c" >/dev/null || { echo "引擎 $c 没有装上" >&2; exit 1; }; done
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin agent \
  && mkdir -p /workspaces /app && chown agent:agent /workspaces
-COPY runner.mjs filestore.mjs verify.mjs mcp.mjs sandbox.mjs sandbox-mcp.mjs /app/
+COPY runner.mjs filestore.mjs verify.mjs mcp.mjs sandbox.mjs sandbox-mcp.mjs selfcheck.mjs /app/
 USER agent
 WORKDIR /workspaces
 EXPOSE 8790

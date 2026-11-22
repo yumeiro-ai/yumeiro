@@ -160,7 +160,7 @@ check_node() {
 sync_code() {
   [ "$SRC" != "$APP_DIR" ] || die "请在新版本解压出来的目录里运行本脚本，不要在 /opt/yumeiro 里运行"
   mkdir -p "$APP_DIR"
-  for item in server.mjs storage.mjs providers.mjs collab.mjs platform-models.mjs market.mjs market-sources.mjs asr.mjs asr-native.mjs memory.mjs audit.mjs envcheck.mjs doctor.mjs mcp.mjs mcp-market.mjs docs.mjs docparse.mjs images.mjs tts.mjs ziputil.mjs updatepkg.mjs vision.mjs remote.mjs recover.mjs project.mjs aiexport.mjs package.json package-lock.json; do
+  for item in server.mjs storage.mjs providers.mjs collab.mjs platform-models.mjs market.mjs market-sources.mjs asr.mjs asr-native.mjs memory.mjs audit.mjs envcheck.mjs doctor.mjs mcp.mjs mcp-market.mjs docs.mjs docparse.mjs images.mjs tts.mjs ziputil.mjs updatepkg.mjs vision.mjs remote.mjs recover.mjs project.mjs aiexport.mjs breaker.mjs dlp.mjs plans.mjs mail.mjs package.json package-lock.json; do
     [ -f "$SRC/$item" ] && install -m 0644 "$SRC/$item" "$APP_DIR/$item"
   done
   rm -rf "$APP_DIR/public" "$APP_DIR/scripts" "$APP_DIR/runner"

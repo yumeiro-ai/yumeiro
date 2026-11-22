@@ -7,7 +7,7 @@ COPY package.json package-lock.json ./
 # 国内服务器可用 NPM_REGISTRY=https://registry.npmmirror.com 加速依赖安装
 RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
  && npm ci --omit=dev && npm cache clean --force
-COPY --chown=node:node server.mjs storage.mjs providers.mjs collab.mjs platform-models.mjs market.mjs market-sources.mjs asr.mjs asr-native.mjs memory.mjs audit.mjs envcheck.mjs doctor.mjs mcp.mjs mcp-market.mjs docs.mjs docparse.mjs images.mjs tts.mjs ziputil.mjs updatepkg.mjs vision.mjs remote.mjs recover.mjs project.mjs aiexport.mjs ./
+COPY --chown=node:node server.mjs storage.mjs providers.mjs collab.mjs platform-models.mjs market.mjs market-sources.mjs asr.mjs asr-native.mjs memory.mjs audit.mjs envcheck.mjs doctor.mjs mcp.mjs mcp-market.mjs docs.mjs docparse.mjs images.mjs tts.mjs ziputil.mjs updatepkg.mjs vision.mjs remote.mjs recover.mjs project.mjs aiexport.mjs breaker.mjs dlp.mjs plans.mjs mail.mjs ./
 # 注意：上面这份 .mjs 清单要和 deploy/yumeiro-native.sh 里的保持一致（test/deploy-lists.test.mjs 会检查）。
 # 客户端安装包不打进镜像（.dockerignore 排除了 public/downloads），放在数据卷的 downloads/ 里，用 scripts/install-clients.mjs 上传。
 COPY --chown=node:node scripts ./scripts
