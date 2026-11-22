@@ -2583,7 +2583,7 @@
           el('option', { value: 'with-clients', textContent: r.clients ? `含客户端安装包（${mb(r.clients)}，Windows / 安卓）` : '含客户端安装包（这个版本没有）', disabled: !r.clients }));
         kind.value = keep === 'with-clients' && r.clients ? 'with-clients' : r.server ? 'server' : r.clients ? 'with-clients' : 'server';
         info2.textContent = `这个版本的安装包：服务端 ${r.server ? '✓ ' + mb(r.server) : '✗ 没有'}　含客户端 ${r.clients ? '✓ ' + mb(r.clients) : '✗ 没有'}${r.server || r.clients ? '' : '（请到发布页手动下载后上传）'}`;
-        notes.replaceChildren(el('summary', { textContent: '这个版本改了什么' }), el('pre', { class: 'team-code', style: 'white-space:pre-wrap;max-height:200px;overflow:auto', textContent: r.notes || '（发布页没有写说明）' }));
+        notes.replaceChildren(el('summary', { textContent: '这个版本改了什么' }), (() => { const box = el('div', { class: 'team-notes', style: 'max-height:240px;overflow:auto;padding:4px 2px' }); if (r.notes) box.append(renderMarkdown(r.notes)); else box.textContent = '（发布页没有写说明）'; return box; })());
         go.disabled = !(r.server || r.clients) || (older && !ack.checked);
       };
       ver.addEventListener('change', refresh); kind.addEventListener('change', refresh); ack.addEventListener('change', refresh); refresh();
